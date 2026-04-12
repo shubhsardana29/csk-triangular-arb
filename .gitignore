@@ -1,0 +1,20 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Environment Variables (SENSITIVE)
+.env
+
+# Logs
+*.log
+
+# IDEs
+.vscode/
+.idea/
+.DS_Store

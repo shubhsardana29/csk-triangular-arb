@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Arbitrage Monitor</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-deep:    oklch(0.13 0.02 260);
+      --bg-card:    oklch(0.18 0.02 260);
+      --bg-hover:   oklch(0.22 0.025 260);
+      --border:     oklch(0.28 0.03 260);
+      --text-primary:   oklch(0.95 0.01 260);
+      --text-secondary: oklch(0.65 0.02 260);
+      --text-muted:     oklch(0.45 0.02 260);
+      --accent-cyan:    oklch(0.78 0.15 195);
+      --accent-purple:  oklch(0.65 0.2 300);
+      --accent-green:   oklch(0.75 0.18 150);
+      --accent-red:     oklch(0.65 0.2 25);
+      --accent-orange:  oklch(0.75 0.16 60);
+      --accent-yellow:  oklch(0.85 0.15 90);
+      --glow-cyan:      oklch(0.78 0.15 195 / 0.3);
+      --glow-green:     oklch(0.75 0.18 150 / 0.25);
+      --glow-red:       oklch(0.65 0.2 25 / 0.25);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: var(--bg-deep);
+      color: var(--text-primary);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    .noise {
+      position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: 0.03;
+      background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+    }
+
+    header {
+      padding: 24px 32px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid var(--border);
+      position: relative; z-index: 1;
+    }
+
+    .logo {
+      display: flex; align-items: center; gap: 12px;
+    }
+
+    .logo-icon {
+      width: 36px; height: 36px;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 18px; font-weight: 800;
+    }
+
+    .logo h1 {
+      font-size: 18px; font-weight: 700;
+      background: linear-gradient(135deg, var(--accent-cyan), var(--accent-purple));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }
+
+    .status-badge {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: 20px;
+      background: var(--bg-card); border: 1px solid var(--border);
+      font-size: 12px; font-weight: 500;
+    }
+
+    .status-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent-green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { box-shadow: 0 0 0 0 var(--glow-green); }
+      50% { box-shadow: 0 0 0 6px transparent; }
+    }
+
+    .container {
+      max-width: 1400px; margin: 0 auto;
+      padding: 24px 32px;
+      position: relative; z-index: 1;
+    }
+
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px; margin-bottom: 20px;
+    }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 20px 24px;
+      transition: all 0.3s ease;
+    }
+
+    .card:hover {
+      border-color: oklch(0.35 0.04 260);
+      transform: translateY(-2px);
+    }
+
+    .card-label {
+      font-size: 11px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 1.5px;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+
+    .card-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 28px; font-weight: 700;
+      line-height: 1.1;
+    }
+
+    .card-sub {
+      font-size: 12px; color: var(--text-secondary);
+      margin-top: 6px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .pair-card .card-value { color: var(--accent-cyan); }
+    .spread-card .card-value { transition: color 0.3s; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px; margin-bottom: 20px;
+    }
+
+    /* Spread Gauge */
+    .gauge-container {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; padding: 30px 24px;
+    }
+
+    .gauge-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; color: var(--text-muted); margin-bottom: 16px; }
+
+    .gauge-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 48px; font-weight: 800;
+      transition: color 0.3s, text-shadow 0.3s;
+    }
+
+    .gauge-value.positive { color: var(--accent-green); text-shadow: 0 0 30px var(--glow-green); }
+    .gauge-value.negative { color: var(--accent-red); text-shadow: 0 0 30px var(--glow-red); }
+    .gauge-value.neutral { color: var(--text-secondary); }
+
+    .gauge-sub { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+
+    /* Spread History Chart */
+    .chart-container { position: relative; height: 200px; }
+
+    canvas { width: 100% !important; height: 100% !important; }
+
+    /* Balance Cards */
+    .balance-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px; margin-top: 12px;
+    }
+
+    .bal-item {
+      background: var(--bg-deep);
+      border-radius: 10px;
+      padding: 14px 16px;
+      text-align: center;
+    }
+
+    .bal-label { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px; color: var(--text-muted); margin-bottom: 4px; }
+    .bal-value { font-family: 'JetBrains Mono', monospace; font-size: 16px; font-weight: 600; color: var(--accent-cyan); }
+
+    /* Trade Log */
+    .trade-log { max-height: 280px; overflow-y: auto; }
+
+    .trade-log::-webkit-scrollbar { width: 4px; }
+    .trade-log::-webkit-scrollbar-track { background: transparent; }
+    .trade-log::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .trade-entry {
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 16px;
+      border-bottom: 1px solid oklch(0.2 0.01 260);
+      animation: slideIn 0.3s ease;
+    }
+
+    @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+
+    .trade-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--accent-green);
+      flex-shrink: 0;
+    }
+
+    .trade-dir { font-size: 12px; font-weight: 600; color: var(--text-primary); flex: 1; }
+    .trade-profit { font-family: 'JetBrains Mono', monospace; font-size: 13px; font-weight: 600; color: var(--accent-green); }
+    .trade-time { font-size: 11px; color: var(--text-muted); }
+
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      height: 200px; color: var(--text-muted); font-size: 13px;
+    }
+
+    .empty-state span { font-size: 32px; margin-bottom: 8px; }
+
+    /* Opportunity Flash */
+    .opportunity-flash {
+      position: fixed; top: 0; left: 0; right: 0;
+      height: 3px; z-index: 100;
+      background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan), var(--accent-green));
+      background-size: 200% 100%;
+      animation: flashSlide 1s ease;
+      opacity: 0; pointer-events: none;
+    }
+
+    .opportunity-flash.active {
+      opacity: 1;
+      animation: flashSlide 1.5s ease forwards;
+    }
+
+    @keyframes flashSlide {
+      0% { background-position: 200% 0; opacity: 1; }
+      80% { opacity: 1; }
+      100% { background-position: -200% 0; opacity: 0; }
+    }
+
+    .cycle-counter {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px; color: var(--text-muted);
+    }
+
+    /* Depth Tables */
+    .depth-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 16px; margin-bottom: 20px;
+    }
+
+    .depth-table {
+      font-size: 11px;
+      width: 100%;
+      border-collapse: collapse;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .depth-table th {
+      text-align: left;
+      color: var(--text-muted);
+      padding-bottom: 8px;
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+
+    .depth-table td {
+      padding: 3px 0;
+    }
+
+    .bid-row { color: var(--accent-green); }
+    .ask-row { color: var(--accent-red); }
+    .qty-cell { text-align: right; color: var(--text-secondary); opacity: 0.8; }
+
+    @media (max-width: 900px) {
+      .grid-3 { grid-template-columns: 1fr; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .container { padding: 16px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="noise"></div>
+  <div class="opportunity-flash" id="flash"></div>
+
+  <header>
+    <div class="logo">
+      <div class="logo-icon">△</div>
+      <h1>Triangular Arbitrage Monitor</h1>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div class="status-badge" style="background: oklch(0.25 0.05 200 / 0.2); border-color: var(--accent-cyan);">
+        <span style="color:var(--accent-cyan); font-weight:700;">VIP Tier:</span>
+        <span id="feeTier">—</span>
+      </div>
+      <span class="cycle-counter" id="cycleCounter">Cycle 0</span>
+      <div class="status-badge" style="gap:6px;">
+        <span id="latencyVal" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text-secondary);">Fetch: --ms</span>
+      </div>
+      <div class="status-badge">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Connecting...</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- Price Cards -->
+    <div class="grid-3">
+      <div class="card pair-card">
+        <div class="card-label">BTC / INR <span style="color:var(--text-muted);font-size:9px;">CoinSwitchX</span></div>
+        <div class="card-value" id="btcInrBid">—</div>
+        <div class="card-sub">Ask: <span id="btcInrAsk">—</span></div>
+      </div>
+      <div class="card pair-card">
+        <div class="card-label">BTC / USDT <span style="color:var(--text-muted);font-size:9px;">Binance+Kucoin</span></div>
+        <div class="card-value" id="btcUsdtBid">—</div>
+        <div class="card-sub">Ask: <span id="btcUsdtAsk">—</span></div>
+      </div>
+      <div class="card pair-card">
+        <div class="card-label">USDT / INR <span style="color:var(--text-muted);font-size:9px;">CoinSwitchX</span></div>
+        <div class="card-value" id="usdtInrBid">—</div>
+        <div class="card-sub">Ask: <span id="usdtInrAsk">—</span></div>
+      </div>
+    </div>
+
+    <!-- Spread Gauge + Chart -->
+    <div class="grid-2">
+      <div class="card gauge-container spread-card">
+        <div class="gauge-label">Market Opportunity</div>
+        <div style="display:flex; gap: 40px; align-items:center; justify-content:center; width:100%;">
+          <div style="text-align:center">
+             <div class="gauge-value neutral" id="grossSpread" style="font-size:32px;">0.00%</div>
+             <div class="gauge-sub">GROSS (Spread)</div>
+          </div>
+          <div style="text-align:center; border-left: 1px solid var(--border); padding-left: 40px;">
+             <div class="gauge-value neutral" id="netSpread" style="font-size:32px;">0.00%</div>
+             <div class="gauge-sub">NET (Actionable)</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Spread History</div>
+        <div class="chart-container">
+          <canvas id="spreadChart"></canvas>
+        </div>
+      </div>
+    </div>
+
+    <!-- Market Depth Section -->
+    <div class="depth-grid">
+      <div class="card">
+        <div class="card-label">Depth: BTC / INR</div>
+        <table class="depth-table" id="depthBtcInr">
+          <thead>
+            <tr><th>Price</th><th style="text-align:right">Qty</th></tr>
+          </thead>
+          <tbody id="depthBtcInrBody">
+            <!-- Dynamic Content -->
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-label">Depth: BTC / USDT</div>
+        <table class="depth-table" id="depthBtcUsdt">
+          <thead>
+            <tr><th>Price</th><th style="text-align:right">Qty</th></tr>
+          </thead>
+          <tbody id="depthBtcUsdtBody">
+            <!-- Dynamic Content -->
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        <div class="card-label">Depth: USDT / INR</div>
+        <table class="depth-table" id="depthUsdtInr">
+          <thead>
+            <tr><th>Price</th><th style="text-align:right">Qty</th></tr>
+          </thead>
+          <tbody id="depthUsdtInrBody">
+            <!-- Dynamic Content -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Balances + Trade Log -->
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-label">Shadow Portfolio</div>
+        <div class="balance-grid">
+          <div class="bal-item">
+            <div class="bal-label">BTC</div>
+            <div class="bal-value" id="balBtc">1.0000</div>
+          </div>
+          <div class="bal-item">
+            <div class="bal-label">INR</div>
+            <div class="bal-value" id="balInr">₹10,00,000</div>
+          </div>
+          <div class="bal-item">
+            <div class="bal-label">USDT</div>
+            <div class="bal-value" id="balUsdt">10,000</div>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-label">Trade Log</div>
+        <div class="trade-log" id="tradeLog">
+          <div class="empty-state">
+            <span>⏳</span>
+            Waiting for arbitrage opportunities...
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // --- Spread History Chart (Pure Canvas) ---
+    const canvas = document.getElementById('spreadChart');
+    const ctx = canvas.getContext('2d');
+    const spreadHistory = [];
+    const MAX_POINTS = 120;
+
+    function resizeCanvas() {
+      const rect = canvas.parentElement.getBoundingClientRect();
+      canvas.width = rect.width * window.devicePixelRatio;
+      canvas.height = rect.height * window.devicePixelRatio;
+      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    function drawChart() {
+      const w = canvas.width / window.devicePixelRatio;
+      const h = canvas.height / window.devicePixelRatio;
+      ctx.clearRect(0, 0, w, h);
+
+      if (spreadHistory.length < 2) return;
+
+      const values = spreadHistory.map(v => v);
+      const min = Math.min(...values, -2);
+      const max = Math.max(...values, 2);
+      const range = max - min || 1;
+
+      // Grid lines
+      ctx.strokeStyle = 'oklch(0.25 0.01 260)';
+      ctx.lineWidth = 0.5;
+      const zeroY = h - ((0 - min) / range) * (h - 20) - 10;
+      ctx.beginPath();
+      ctx.setLineDash([4, 4]);
+      ctx.moveTo(0, zeroY);
+      ctx.lineTo(w, zeroY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Fee threshold lines
+      ctx.strokeStyle = 'oklch(0.35 0.08 25 / 0.5)';
+      const threshUp = h - ((1.5 - min) / range) * (h - 20) - 10;
+      const threshDn = h - ((-1.5 - min) / range) * (h - 20) - 10;
+      ctx.beginPath();
+      ctx.setLineDash([2, 6]);
+      ctx.moveTo(0, threshUp); ctx.lineTo(w, threshUp);
+      ctx.moveTo(0, threshDn); ctx.lineTo(w, threshDn);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Spread line
+      const grad = ctx.createLinearGradient(0, 0, w, 0);
+      grad.addColorStop(0, 'oklch(0.65 0.2 300 / 0.6)');
+      grad.addColorStop(1, 'oklch(0.78 0.15 195)');
+
+      ctx.strokeStyle = grad;
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+
+      const step = w / (MAX_POINTS - 1);
+      const startIdx = Math.max(0, values.length - MAX_POINTS);
+
+      for (let i = startIdx; i < values.length; i++) {
+        const x = (i - startIdx) * step;
+        const y = h - ((values[i] - min) / range) * (h - 20) - 10;
+        if (i === startIdx) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+
+      // Glow fill
+      const lastX = (values.length - 1 - startIdx) * step;
+      ctx.lineTo(lastX, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
+      const fillGrad = ctx.createLinearGradient(0, 0, 0, h);
+      fillGrad.addColorStop(0, 'oklch(0.78 0.15 195 / 0.15)');
+      fillGrad.addColorStop(1, 'oklch(0.78 0.15 195 / 0)');
+      ctx.fillStyle = fillGrad;
+      ctx.fill();
+    }
+
+    // --- SSE Connection ---
+    const es = new EventSource('/sse');
+    let connected = false;
+
+    es.addEventListener('tick', (e) => {
+      const d = JSON.parse(e.data);
+      if (!connected) {
+        connected = true;
+        document.getElementById('statusDot').style.background = 'var(--accent-green)';
+        document.getElementById('statusText').textContent = 'Live';
+      }
+
+      // Cycle
+      document.getElementById('cycleCounter').textContent = `Cycle ${d.cycle}`;
+      document.getElementById('latencyVal').textContent = `Fetch: ${d.fetch_latency_ms}ms`;
+
+      // Prices
+      document.getElementById('btcInrBid').textContent = '₹' + Number(d.btc_inr_bid).toLocaleString('en-IN', {maximumFractionDigits: 0});
+      document.getElementById('btcInrAsk').textContent = '₹' + Number(d.btc_inr_ask).toLocaleString('en-IN', {maximumFractionDigits: 0});
+      document.getElementById('btcUsdtBid').textContent = '$' + Number(d.btc_usdt_bid).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      document.getElementById('btcUsdtAsk').textContent = '$' + Number(d.btc_usdt_ask).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+      document.getElementById('usdtInrBid').textContent = '₹' + Number(d.usdt_inr_bid).toFixed(2);
+      document.getElementById('usdtInrAsk').textContent = '₹' + Number(d.usdt_inr_ask).toFixed(2);
+
+      // Fee Tier Display
+      if (d.taker_fee !== undefined) {
+         document.getElementById('feeTier').textContent = `${(d.taker_fee * 100).toFixed(2)}% Fee + ${(d.tds_rate * 100).toFixed(0)}% TDS`;
+      }
+
+      // Spread
+      const netSv = document.getElementById('netSpread');
+      const grossSv = document.getElementById('grossSpread');
+      
+      const netSpread = d.profit_pct;
+      const grossSpread = d.gross_profit_pct;
+      
+      netSv.textContent = (netSpread >= 0 ? '+' : '') + netSpread.toFixed(4) + '%';
+      netSv.className = 'gauge-value ' + (netSpread > 0 ? 'positive' : 'neutral');
+      
+      grossSv.textContent = (grossSpread >= 0 ? '+' : '') + grossSpread.toFixed(4) + '%';
+      grossSv.className = 'gauge-value ' + (grossSpread > 1.5 ? 'positive' : 'neutral');
+
+      spreadHistory.push(grossSpread);
+      if (spreadHistory.length > MAX_POINTS * 2) spreadHistory.splice(0, spreadHistory.length - MAX_POINTS);
+      drawChart();
+
+      // Balances
+      if (d.balances) {
+        document.getElementById('balBtc').textContent = Number(d.balances.BTC).toFixed(4);
+        document.getElementById('balInr').textContent = '₹' + Number(d.balances.INR).toLocaleString('en-IN', {maximumFractionDigits: 0});
+        document.getElementById('balUsdt').textContent = Number(d.balances.USDT).toLocaleString('en-US', {maximumFractionDigits: 2});
+      }
+
+      // Depth Rendering Helper
+      const renderDepth = (tbodyId, bids, asks) => {
+        const tbody = document.getElementById(tbodyId);
+        let html = '';
+        
+        // Asks (Reverse to show highest at top if needed, but usually we show closest to spread)
+        // We show top 3 asks and top 3 bids for space
+        asks.slice(0, 3).reverse().forEach(a => {
+           html += `<tr class="ask-row"><td>${a[0].toLocaleString()}</td><td class="qty-cell">${a[1].toFixed(4)}</td></tr>`;
+        });
+        
+        html += `<tr style="height:8px"><td colspan="2" style="border-bottom:1px dashed var(--border)"></td></tr>`;
+        
+        bids.slice(0, 3).forEach(b => {
+           html += `<tr class="bid-row"><td>${b[0].toLocaleString()}</td><td class="qty-cell">${b[1].toFixed(4)}</td></tr>`;
+        });
+        
+        tbody.innerHTML = html;
+      };
+
+      if (d.depth) {
+        renderDepth('depthBtcInrBody', d.depth.btc_inr.bids, d.depth.btc_inr.asks);
+        renderDepth('depthBtcUsdtBody', d.depth.btc_usdt.bids, d.depth.btc_usdt.asks);
+        renderDepth('depthUsdtInrBody', d.depth.usdt_inr.bids, d.depth.usdt_inr.asks);
+      }
+
+      // Opportunity flash
+      if (d.opportunity) {
+        const flash = document.getElementById('flash');
+        flash.classList.remove('active');
+        void flash.offsetWidth;
+        flash.classList.add('active');
+
+        const log = document.getElementById('tradeLog');
+        if (log.querySelector('.empty-state')) log.innerHTML = '';
+
+        const entry = document.createElement('div');
+        entry.className = 'trade-entry';
+        const time = new Date(d.timestamp).toLocaleTimeString();
+        entry.innerHTML = `
+          <div class="trade-dot"></div>
+          <div class="trade-dir">${d.direction}</div>
+          <div class="trade-profit">+₹${d.profit_inr}</div>
+          <div class="trade-time">${time}</div>
+        `;
+        log.prepend(entry);
+      }
+    });
+
+    es.onerror = () => {
+      document.getElementById('statusDot').style.background = 'var(--accent-red)';
+      document.getElementById('statusText').textContent = 'Disconnected';
+      connected = false;
+    };
+  </script>
+</body>
+</html>
