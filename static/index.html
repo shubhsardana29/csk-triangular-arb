@@ -102,6 +102,104 @@
       background: oklch(1 0 0 / 0.05); padding: 8px 12px; border-radius: 8px;
       border-left: 3px solid var(--accent-cyan);
     }
+    .card-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .card-opportunity {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .mini-stat {
+      background: oklch(1 0 0 / 0.03);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .mini-stat-label {
+      font-size: 9px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .mini-stat-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .depth-snapshot {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .depth-mini {
+      background: oklch(1 0 0 / 0.03);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+    .depth-mini-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      font-size: 9px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .depth-mini-book {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+    }
+    .depth-mini-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .depth-mini-side {
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+    .depth-mini-empty {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .card-event {
+      background: linear-gradient(135deg, oklch(0.18 0.03 260), oklch(0.15 0.03 235));
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+    }
+    .card-event-label {
+      font-size: 9px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .card-event-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+    .card-event-detail {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
 
     /* Modal Styling */
     .modal-overlay {
@@ -139,11 +237,88 @@
 
     .analytic-pane { display: flex; flex-direction: column; gap: 24px; }
     .label-tag { font-size: 11px; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; }
+    .hero-panel {
+      background: linear-gradient(135deg, oklch(0.16 0.03 260), oklch(0.14 0.02 235));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+    .hero-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .hero-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      background: oklch(1 0 0 / 0.04);
+    }
+    .hero-status.live {
+      color: var(--accent-green);
+      border-color: oklch(0.75 0.18 150 / 0.35);
+      box-shadow: 0 0 30px var(--glow-green);
+    }
+    .hero-status.stale {
+      color: var(--accent-red);
+      border-color: oklch(0.65 0.2 25 / 0.35);
+    }
+    .hero-summary {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-secondary);
+      text-align: right;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .hero-stat {
+      background: oklch(0 0 0 / 0.14);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .hero-stat .mini-stat-value {
+      font-size: 18px;
+    }
+    .balance-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .balance-tile {
+      background: oklch(0 0 0 / 0.14);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .balance-tile .mini-stat-value {
+      font-size: 16px;
+    }
 
     .big-chart-box {
       background: var(--bg-deep); border: 1px solid var(--border);
       border-radius: 16px; height: 280px; width: 100%; padding: 16px;
       position: relative;
+    }
+    .big-chart-box canvas {
+      width: 100% !important;
+      height: 100% !important;
+      display: block;
     }
 
     .depth-view { display: flex; flex-direction: column; gap: 16px; }
@@ -154,6 +329,45 @@
     .c-bid { color: var(--accent-green); }
     .c-ask { color: var(--accent-red); }
     .c-qty { opacity: 0.5; text-align: right; }
+    .empty-depth { color: var(--text-muted); text-align: center; padding: 10px 0; }
+    .event-feed {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .event-item {
+      background: var(--bg-deep);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .event-item.good { border-color: oklch(0.75 0.18 150 / 0.3); }
+    .event-item.warn { border-color: oklch(0.65 0.2 25 / 0.3); }
+    .event-item.info { border-color: oklch(0.78 0.15 195 / 0.28); }
+    .event-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 6px;
+      align-items: center;
+    }
+    .event-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .event-time {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .event-detail {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
 
     .stat-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     .stat-box { 
@@ -165,6 +379,10 @@
     @media (max-width: 900px) {
       .modal-content { grid-template-columns: 1fr; }
       .container { padding: 16px; }
+      .hero-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .balance-strip { grid-template-columns: 1fr; }
+      .depth-snapshot { grid-template-columns: 1fr; }
+      .card-opportunity { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -197,10 +415,68 @@
       </div>
       <div class="modal-content">
         <div class="analytic-pane">
+          <div class="hero-panel">
+            <div class="hero-top">
+              <div id="mStatus" class="hero-status">Monitoring</div>
+              <div class="hero-summary" id="mSummary">Awaiting market snapshot</div>
+            </div>
+            <div class="hero-grid">
+              <div class="hero-stat">
+                <div class="mini-stat-label">Path Starts With</div>
+                <div class="mini-stat-value" id="mBaseCurrency">--</div>
+              </div>
+              <div class="hero-stat">
+                <div class="mini-stat-label">Start Amount</div>
+                <div class="mini-stat-value" id="mExecQty">--</div>
+              </div>
+              <div class="hero-stat">
+                <div class="mini-stat-label">Projected INR</div>
+                <div class="mini-stat-value" id="mExpectedProfit">--</div>
+              </div>
+              <div class="hero-stat">
+                <div class="mini-stat-label">Shadow INR P&L</div>
+                <div class="mini-stat-value" id="mCumPnl">--</div>
+              </div>
+              <div class="hero-stat">
+                <div class="mini-stat-label">Recent Execution</div>
+                <div class="mini-stat-value" id="mLastExecution">--</div>
+              </div>
+              <div class="hero-stat">
+                <div class="mini-stat-label">INR Change</div>
+                <div class="mini-stat-value" id="mExecInrVariance">--</div>
+              </div>
+              <div class="hero-stat">
+                <div class="mini-stat-label">Asset Change</div>
+                <div class="mini-stat-value" id="mExecSymbolVariance">--</div>
+              </div>
+            </div>
+            <div class="balance-strip">
+              <div class="balance-tile">
+                <div class="mini-stat-label">Shadow Asset</div>
+                <div class="mini-stat-value" id="mBalSymbol">--</div>
+              </div>
+              <div class="balance-tile">
+                <div class="mini-stat-label">Shadow INR Balance</div>
+                <div class="mini-stat-value" id="mBalInr">--</div>
+              </div>
+              <div class="balance-tile">
+                <div class="mini-stat-label">Shadow USDT Balance</div>
+                <div class="mini-stat-value" id="mBalUsdt">--</div>
+              </div>
+            </div>
+          </div>
+
           <div>
-            <div class="label-tag">Spread Performance History</div>
+            <div class="label-tag">Spread History</div>
             <div class="big-chart-box">
               <canvas id="modalChart"></canvas>
+            </div>
+          </div>
+
+          <div>
+            <div class="label-tag">Shadow P&L</div>
+            <div class="big-chart-box">
+              <canvas id="pnlChart"></canvas>
             </div>
           </div>
           
@@ -219,6 +495,11 @@
             <div class="label-tag">Execution Strategy</div>
             <div class="path-bubble" id="mPath" style="font-size: 13px; padding: 16px;">--</div>
           </div>
+
+          <div>
+            <div class="label-tag">Recent Activity</div>
+            <div class="event-feed" id="mEvents"></div>
+          </div>
         </div>
 
         <div class="depth-view">
@@ -230,6 +511,10 @@
           <div class="depth-item">
             <div class="label-tag" id="mD2Title" style="font-size: 9px; margin-bottom:8px;">PAIR 2</div>
             <table class="depth-tbl" id="mDepth2"></table>
+          </div>
+          <div class="depth-item">
+            <div class="label-tag" id="mD3Title" style="font-size: 9px; margin-bottom:8px;">PAIR 3</div>
+            <table class="depth-tbl" id="mDepth3"></table>
           </div>
         </div>
       </div>
@@ -244,8 +529,11 @@
 
     const historySize = 60;
     const allHistory = {}; // symbol -> spread array
+    let latestSymbols = {};
+    let recentEvents = {};
     let activeSymbol = null;
     let firstUpdate = true;
+    const cssVars = getComputedStyle(document.documentElement);
 
     es.onmessage = (e) => {
       const data = JSON.parse(e.data);
@@ -260,6 +548,8 @@
       document.getElementById('cycleVal').textContent = data.cycle_count;
 
       const symbols = data.symbols;
+      latestSymbols = symbols || {};
+      recentEvents = data.recent_events || {};
       
       Object.keys(symbols).forEach(s => {
         // Record History
@@ -286,11 +576,14 @@
 
     function updateCardUI(card, symbol, data) {
       const net = data.net;
+      const gross = data.gross;
       const profit = net.profit_pct;
       const sClass = profit > 0 ? 'p-pos' : 'p-neg';
       
       const depth = net.depth || {};
       const s_inr = depth[`${symbol}/INR`] || {bids:[], asks:[]};
+      const s_usdt = depth[`${symbol}/USDT`] || {bids:[], asks:[]};
+      const event = (recentEvents[symbol] || [])[0];
 
       card.innerHTML = `
         <div class="card-head">
@@ -303,8 +596,28 @@
         <div class="path-bubble">
           ${net.direction.split(' -> ').join(' ➜ ')}
         </div>
-        <div style="font-family:'JetBrains Mono'; font-size:10px; color:var(--text-muted); text-align:right;">
-          INR: ₹${Number(s_inr.bids[0]?.[0] || 0).toLocaleString()}
+        <div class="card-opportunity">
+          <div class="mini-stat">
+            <div class="mini-stat-label">Projected INR</div>
+            <div class="mini-stat-value">${formatCurrency(net.expected_profit_inr || 0)}</div>
+          </div>
+          <div class="mini-stat">
+            <div class="mini-stat-label">Start Amount</div>
+            <div class="mini-stat-value">${formatAmountWithUnit(net.executable_qty || 0, net.base_currency || symbol)}</div>
+          </div>
+        </div>
+        <div class="depth-snapshot">
+          ${renderMiniDepthCard(`${symbol} / INR`, s_inr)}
+          ${renderMiniDepthCard(`${symbol} / USDT`, s_usdt)}
+        </div>
+        <div class="card-event">
+          <div class="card-event-label">Recent Activity</div>
+          <div class="card-event-title">${event ? event.title : (net.opportunity ? 'Live opportunity' : 'Watching market')}</div>
+          <div class="card-event-detail">${event ? event.detail : `Gross ${gross.profit_pct.toFixed(4)}%`}</div>
+        </div>
+        <div class="card-meta">
+          <span>${net.opportunity ? 'Actionable' : (net.reason || 'Monitoring')}</span>
+          <span>INR Bid: ${formatPrice(s_inr.bids[0]?.[0])}</span>
         </div>
       `;
       
@@ -327,7 +640,7 @@
       ctx.beginPath();
       ctx.strokeStyle = 'oklch(0.78 0.15 195 / 0.4)';
       ctx.lineWidth = 1;
-      const step = w / (historySize - 1);
+      const step = history.length > 1 ? w / (history.length - 1) : w;
       
       const max = Math.max(...history, 0.01);
       const min = Math.min(...history, -0.01);
@@ -346,7 +659,9 @@
       activeSymbol = symbol;
       document.getElementById('modalTitle').textContent = `${symbol} Market Intelligence`;
       modalOverlay.style.display = 'flex';
-      // Initial draw
+      if (latestSymbols[symbol]) {
+        updateModalUI(symbol, latestSymbols[symbol]);
+      }
       setTimeout(() => renderModalChart(symbol), 50);
     }
 
@@ -358,27 +673,71 @@
     function updateModalUI(symbol, data) {
       const net = data.net;
       const gross = data.gross;
+      const events = recentEvents[symbol] || [];
+      const latestEvent = events[0];
+      const shadow = data.shadow_balances || {};
+      const lastExecution = data.last_execution || null;
+      const cumulativePnl = data.cumulative_shadow_pnl || 0;
       
       document.getElementById('mPath').textContent = net.direction.split(' -> ').join(' ➜ ');
       const netV = document.getElementById('mNetVal');
       netV.textContent = (net.profit_pct > 0 ? '+' : '') + net.profit_pct.toFixed(4) + '%';
       netV.className = 'stat-v ' + (net.profit_pct > 0 ? 'p-pos' : 'p-neg');
       document.getElementById('mGrossVal').textContent = gross.profit_pct.toFixed(4) + '%';
+      document.getElementById('mBaseCurrency').textContent = net.base_currency || '--';
+      document.getElementById('mExecQty').textContent = formatAmountWithUnit(net.executable_qty || 0, net.base_currency || symbol);
+      document.getElementById('mExpectedProfit').textContent = formatCurrency(net.expected_profit_inr || 0);
+      document.getElementById('mCumPnl').textContent = formatSignedCurrency(cumulativePnl);
+      document.getElementById('mLastExecution').textContent = lastExecution ? relativeTime(lastExecution.timestamp) : 'Never';
+      document.getElementById('mExecInrVariance').textContent = lastExecution ? formatSignedCurrency(lastExecution.inr_variance || 0) : '--';
+      document.getElementById('mExecSymbolVariance').textContent = lastExecution ? formatSignedNumber(lastExecution.symbol_variance || 0, 6) : '--';
+      document.getElementById('mBalSymbol').textContent = formatCompact(shadow.symbol || 0);
+      document.getElementById('mBalInr').textContent = formatCurrency(shadow.INR || 0);
+      document.getElementById('mBalUsdt').textContent = formatCompact(shadow.USDT || 0);
+      document.getElementById('mSummary').textContent = `${net.opportunity ? 'Actionable setup' : 'Monitoring'} • ${net.reason || 'Best available route'} • ${latestEvent ? latestEvent.title : 'No recent event'}`;
+      const status = document.getElementById('mStatus');
+      status.textContent = net.opportunity ? 'Opportunity Live' : 'Monitoring';
+      status.className = 'hero-status ' + (net.opportunity ? 'live' : 'stale');
 
       document.getElementById('mD1Title').textContent = `${symbol} / INR`;
       document.getElementById('mD2Title').textContent = `${symbol} / USDT`;
+      document.getElementById('mD3Title').textContent = `USDT / INR`;
       
       renderDepth('mDepth1', net.depth[`${symbol}/INR`] || {bids:[], asks:[]});
       renderDepth('mDepth2', net.depth[`${symbol}/USDT`] || {bids:[], asks:[]});
+      renderDepth('mDepth3', net.depth['USDT/INR'] || {bids:[], asks:[]});
+      renderEvents('mEvents', events, net);
       
       renderModalChart(symbol);
+      renderPnlChart(symbol, data.shadow_pnl_history || []);
     }
 
     function renderModalChart(symbol) {
-      const canvas = document.getElementById('modalChart');
-      const history = allHistory[symbol] || [];
+      renderSeriesChart('modalChart', allHistory[symbol] || [], {
+        floor: 0.05,
+        ceiling: -0.05,
+        gradientStart: cssVars.getPropertyValue('--accent-purple').trim() || 'oklch(0.65 0.2 300)',
+        gradientEnd: cssVars.getPropertyValue('--accent-cyan').trim() || 'oklch(0.78 0.15 195)',
+        fillStart: 'oklch(0.78 0.15 195 / 0.1)',
+        fillEnd: 'oklch(0.78 0.15 195 / 0)'
+      });
+    }
+
+    function renderPnlChart(symbol, history) {
+      renderSeriesChart('pnlChart', history, {
+        floor: 5,
+        ceiling: -5,
+        gradientStart: cssVars.getPropertyValue('--accent-green').trim() || 'oklch(0.75 0.18 150)',
+        gradientEnd: cssVars.getPropertyValue('--accent-cyan').trim() || 'oklch(0.78 0.15 195)',
+        fillStart: 'oklch(0.75 0.18 150 / 0.12)',
+        fillEnd: 'oklch(0.75 0.18 150 / 0)'
+      });
+    }
+
+    function renderSeriesChart(canvasId, history, palette) {
+      const canvas = document.getElementById(canvasId);
       if (!canvas || !history.length) return;
-      
+
       const ctx = canvas.getContext('2d');
       const w = canvas.offsetWidth;
       const h = canvas.offsetHeight;
@@ -386,22 +745,23 @@
       ctx.scale(2, 2);
       ctx.clearRect(0, 0, w, h);
 
-      const max = Math.max(...history, 0.05);
-      const min = Math.min(...history, -0.05);
-      const range = max - min;
-      const step = w / (historySize - 1);
+      const max = Math.max(...history, palette.floor ?? 0.05);
+      const min = Math.min(...history, palette.ceiling ?? -0.05);
+      const range = max - min || 1;
+      const step = history.length > 1 ? w / (history.length - 1) : w;
 
-      // Grid
       ctx.strokeStyle = 'oklch(0.25 0.02 260)';
       ctx.lineWidth = 0.5;
       const zeroY = h - ((0 - min) / range) * h;
-      ctx.beginPath(); ctx.moveTo(0, zeroY); ctx.lineTo(w, zeroY); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, zeroY);
+      ctx.lineTo(w, zeroY);
+      ctx.stroke();
 
-      // Line
-      const grad = ctx.createLinearGradient(0,0,w,0);
-      grad.addColorStop(0, 'var(--accent-purple)');
-      grad.addColorStop(1, 'var(--accent-cyan)');
-      
+      const grad = ctx.createLinearGradient(0, 0, w, 0);
+      grad.addColorStop(0, palette.gradientStart);
+      grad.addColorStop(1, palette.gradientEnd);
+
       ctx.beginPath();
       ctx.strokeStyle = grad;
       ctx.lineWidth = 2;
@@ -412,23 +772,125 @@
       });
       ctx.stroke();
 
-      // Fill
-      ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+      ctx.lineTo(w, h);
+      ctx.lineTo(0, h);
+      ctx.closePath();
       const fill = ctx.createLinearGradient(0, 0, 0, h);
-      fill.addColorStop(0, 'oklch(0.78 0.15 195 / 0.1)');
-      fill.addColorStop(1, 'oklch(0.78 0.15 195 / 0)');
-      ctx.fillStyle = fill; ctx.fill();
+      fill.addColorStop(0, palette.fillStart);
+      fill.addColorStop(1, palette.fillEnd);
+      ctx.fillStyle = fill;
+      ctx.fill();
     }
 
     function renderDepth(id, book) {
       const tbl = document.getElementById(id);
       const asks = (book.asks || []).slice(0, 5).reverse();
       const bids = (book.bids || []).slice(0, 5);
+      if (!asks.length && !bids.length) {
+        tbl.innerHTML = '<tr><td colspan="2" class="empty-depth">No depth available</td></tr>';
+        return;
+      }
       let h = '<tr><th>Price</th><th class="c-qty">Qty</th></tr>';
       asks.forEach(a => h += `<tr class="c-ask"><td>${Number(a[0]).toLocaleString()}</td><td class="c-qty">${Number(a[1]).toFixed(4)}</td></tr>`);
       h += `<tr><td colspan="2" style="border-bottom:1px dashed var(--border); height:4px;"></td></tr>`;
       bids.forEach(b => h += `<tr class="c-bid"><td>${Number(b[0]).toLocaleString()}</td><td class="c-qty">${Number(b[1]).toFixed(4)}</td></tr>`);
       tbl.innerHTML = h;
+    }
+
+    function renderMiniDepthCard(label, book) {
+      const bestAsk = book.asks?.[0];
+      const bestBid = book.bids?.[0];
+      const levelCount = `${Math.min(book.bids?.length || 0, 5)}/${Math.min(book.asks?.length || 0, 5)} lvls`;
+      return `
+        <div class="depth-mini">
+          <div class="depth-mini-head">
+            <span>${label}</span>
+            <span>${levelCount}</span>
+          </div>
+          ${
+            !bestAsk && !bestBid
+              ? '<div class="depth-mini-empty">No depth available</div>'
+              : `<div class="depth-mini-book">
+                  <div class="depth-mini-row">
+                    <span class="depth-mini-side c-ask">Ask</span>
+                    <span>${formatPrice(bestAsk?.[0])}</span>
+                    <span class="c-ask">${formatCompact(bestAsk?.[1] || 0)}</span>
+                  </div>
+                  <div class="depth-mini-row">
+                    <span class="depth-mini-side c-bid">Bid</span>
+                    <span>${formatPrice(bestBid?.[0])}</span>
+                    <span class="c-bid">${formatCompact(bestBid?.[1] || 0)}</span>
+                  </div>
+                </div>`
+          }
+        </div>
+      `;
+    }
+
+    function renderEvents(id, events, net) {
+      const el = document.getElementById(id);
+      if (!events.length) {
+        el.innerHTML = `<div class="event-item info">
+          <div class="event-head">
+            <div class="event-title">${net.opportunity ? 'Live opportunity being monitored' : 'No recent signal transitions'}</div>
+            <div class="event-time">now</div>
+          </div>
+          <div class="event-detail">${net.direction}</div>
+        </div>`;
+        return;
+      }
+
+      el.innerHTML = events.map(event => `
+        <div class="event-item ${event.level || 'info'}">
+          <div class="event-head">
+            <div class="event-title">${event.title}</div>
+            <div class="event-time">${relativeTime(event.timestamp)}</div>
+          </div>
+          <div class="event-detail">${event.detail}</div>
+        </div>
+      `).join('');
+    }
+
+    function formatCompact(value) {
+      return Number(value || 0).toLocaleString(undefined, {
+        maximumFractionDigits: 4
+      });
+    }
+
+    function formatAmountWithUnit(value, unit) {
+      if ((unit || '').toUpperCase() === 'INR') {
+        return formatCurrency(value);
+      }
+      return `${formatCompact(value)} ${unit || ''}`.trim();
+    }
+
+    function formatPrice(value) {
+      if (value === undefined || value === null || Number.isNaN(Number(value))) return '--';
+      return Number(value).toLocaleString(undefined, { maximumFractionDigits: 4 });
+    }
+
+    function formatCurrency(value) {
+      const num = Number(value || 0);
+      return `₹${num.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    }
+
+    function formatSignedCurrency(value) {
+      const num = Number(value || 0);
+      return `${num >= 0 ? '+' : '-'}₹${Math.abs(num).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+    }
+
+    function formatSignedNumber(value, digits = 4) {
+      const num = Number(value || 0);
+      return `${num >= 0 ? '+' : '-'}${Math.abs(num).toLocaleString(undefined, { maximumFractionDigits: digits })}`;
+    }
+
+    function relativeTime(timestamp) {
+      if (!timestamp) return '--';
+      const diff = Math.max(0, Math.floor(Date.now() / 1000 - timestamp));
+      if (diff < 5) return 'just now';
+      if (diff < 60) return `${diff}s ago`;
+      if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+      return `${Math.floor(diff / 3600)}h ago`;
     }
 
     window.onclick = (e) => { if (e.target == modalOverlay) closeModal(); };

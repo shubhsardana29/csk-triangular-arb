@@ -1,23 +1,9 @@
-# Core HTTP client
+# HTTP client and web server
+aiohttp>=3.9.0
+aiohttp_sse>=2.2.0
 
-requests>=2.31.0
+# CoinSwitch request signing
+cryptography>=42.0.0
 
-# Socket.IO client (used for CoinSwitch / CoinDCX WebSockets)
-
-python-socketio[client]>=5.11.0
-
-# Engine.IO (dependency, but safer to pin)
-
-python-engineio>=4.8.0
-
-# WebSocket transport
-
-websocket-client>=1.7.0
-
-# Optional: faster JSON parsing (recommended for real-time)
-
-orjson>=3.9.0
-
-# Optional: data handling / logs analysis
-
-pandas>=2.2.0
+# Environment variable loading
+python-dotenv>=1.0.0

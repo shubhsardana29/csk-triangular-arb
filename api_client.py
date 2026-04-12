@@ -1,5 +1,4 @@
 import time
-import json
 import urllib.parse
 from urllib.parse import urlparse, urlencode
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -28,9 +27,14 @@ class CoinSwitchClient:
             await self.session.close()
         
     def _generate_signature(self, method: str, endpoint: str, params: dict, epoch_time: str) -> str:
+        if not self.api_key:
+            raise ValueError("Missing CoinSwitch API key. Set COINSWITCH_API_KEY in your .env file.")
+        if not self.secret_key:
+            raise ValueError("Missing CoinSwitch secret key. Set COINSWITCH_SECRET_KEY or COINSWITCH_API_SECRET in your .env file.")
+
         unquote_endpoint = endpoint
         if method == "GET" and params:
-            # build query string exactly as CoinSwitch expects
+            # CoinSwitch signs the full GET path including its query string.
             query = urlparse(endpoint).query
             prefix = '?' if not query else '&'
             endpoint += prefix + urlencode(params)
@@ -58,18 +62,56 @@ class CoinSwitchClient:
             'X-AUTH-APIKEY': self.api_key,
             'X-AUTH-EPOCH': epoch_time
         }
-        
-    async def get_depth(self, symbol: str, exchange: str = "coinswitchx") -> dict:
+
+    async def _get(
+        self,
+        endpoint: str,
+        params: dict | None = None,
+        timeout: float = 5,
+        suppress_statuses: set[int] | None = None,
+    ) -> dict:
+        params = params or {}
+        suppress_statuses = suppress_statuses or set()
+        url = self.base_url + endpoint
+        headers = self._get_headers("GET", endpoint, params)
+
+        try:
+            if self.session:
+                async with self.session.get(url, headers=headers, params=params, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get("data", data)
+                    if response.status in suppress_statuses:
+                        return {}
+
+                    text = await response.text()
+                    logger.error("API Error %s for %s: %s", response.status, endpoint, text[:200])
+                    return {}
+
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, headers=headers, params=params, timeout=timeout) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        return data.get("data", data)
+                    if response.status in suppress_statuses:
+                        return {}
+                    return {}
+        except Exception as e:
+            logger.error("Connection Error for %s: %s", endpoint, str(e))
+            return {}
+
+    async def get_depth(self, symbol: str, exchange: str = "coinswitchx", quiet_missing: bool = False) -> dict:
         endpoint = "/trade/api/v2/depth"
         
-        # Route C2C to binance/kucoin if specified or if usdt is present
+        # USDT cross pairs are sourced from the external C2C venue by default.
         if exchange == "coinswitchx" and "usdt" in symbol and "inr" not in symbol:
             exchange = "binance"
             
         params = {"symbol": symbol, "exchange": exchange}
         url = self.base_url + endpoint
         headers = self._get_headers("GET", endpoint, params)
-        
+        suppress_statuses = {422} if quiet_missing else set()
+
         try:
             if self.session:
                 async with self.session.get(url, headers=headers, params=params, timeout=2) as response:
@@ -77,7 +119,10 @@ class CoinSwitchClient:
                         data = await response.json()
                         return data.get("data", data)
                     elif response.status == 429:
+                        # Downstream code treats empty books as "not tradable this cycle".
                         logger.warning(f"RATE LIMIT (429) for {symbol} on {exchange}")
+                        return {"bids": [], "asks": []}
+                    elif response.status in suppress_statuses:
                         return {"bids": [], "asks": []}
                     else:
                         text = await response.text()
@@ -89,11 +134,19 @@ class CoinSwitchClient:
                         if response.status == 200:
                             data = await response.json()
                             return data.get("data", data)
+                        elif response.status in suppress_statuses:
+                            return {"bids": [], "asks": []}
                         else:
                             return {"bids": [], "asks": []}
         except Exception as e:
             logger.error(f"Connection Error for {symbol}: {str(e)}")
             return {"bids": [], "asks": []}
+
+    async def get_all_pairs_ticker(self, exchange: str = "coinswitchx"):
+        return await self._get("/trade/api/v2/24hr/all-pairs/ticker", {"exchange": exchange})
+
+    async def get_active_coins(self, exchange: str = "coinswitchx"):
+        return await self._get("/trade/api/v2/coins", {"exchange": exchange})
 
     async def fetch_triangular_books(self, symbols: list = None) -> dict:
         """
@@ -104,10 +157,7 @@ class CoinSwitchClient:
             import config
             symbols = config.SYMBOLS
             
-        # Deduplicate required pairs
-        # 1. S/INR for each S
-        # 2. S/USDT for each S
-        # 3. USDT/INR (Common)
+        # Build the minimum pair set needed to evaluate every symbol triangle.
         
         pairs = [("usdt/inr", "coinswitchx")] # Start with common pair
         for s in symbols:
@@ -127,7 +177,7 @@ class CoinSwitchClient:
             else:
                 depth_map[pair_key] = {"bids": res.get("bids", []), "asks": res.get("asks", [])}
                 
-        # Group by Symbol for the engine
+        # Reshape the flat pair map into the per-symbol triangle structure the engine expects.
         tri_books = {}
         common_usdt_inr = depth_map.get("USDT/INR", {"bids": [], "asks": []})
         
