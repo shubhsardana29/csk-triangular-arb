@@ -1,169 +1,112 @@
-"""
-Real-time Arbitrage Dashboard Server
-Serves a beautiful OKLCH-themed web UI and streams live market data via SSE.
-"""
 import asyncio
 import json
-import os
-import time
 import logging
-import aiohttp
 from aiohttp import web
 from aiohttp_sse import sse_response
-from dotenv import load_dotenv
-from arbitrage_engine import ArbitrageEngine, ShadowExecutor
+from api_client import CoinSwitchClient
+from arbitrage_engine import ArbitrageEngine
 import config
+from dotenv import load_dotenv
+import os
+import time
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(message)s')
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 class AppState:
     def __init__(self):
-        self.latest_data = {}
-        self.trade_log = []
+        self.data = {
+            "symbols": {}, # symbol -> latest data
+            "cycle_count": 0,
+            "status": "Initializing...",
+            "last_update": 0
+        }
         self.data_condition = None
+
+    async def update(self, symbol_data: dict, cycle: int, latency: float):
+        async with self.data_condition:
+            self.data["symbols"] = symbol_data
+            self.data["cycle_count"] = cycle
+            self.data["last_latency"] = f"{latency:.1f}ms"
+            self.data["status"] = "Active"
+            self.data["last_update"] = time.time()
+            self.data_condition.notify_all()
+
+app_state = AppState()
+
+async def sse_handler(request):
+    async with sse_response(request) as resp:
+        logger.info("New SSE client connected")
+        while True:
+            async with app_state.data_condition:
+                await app_state.data_condition.wait()
+                payload = json.dumps(app_state.data)
+                await resp.send(payload)
 
 async def index(request):
     return web.FileResponse('./static/index.html')
 
-async def sse_handler(request):
-    state = request.app['state']
-    try:
-        async with sse_response(request) as resp:
-            # Push latest data immediately on connect
-            if state.latest_data:
-                await resp.send(json.dumps(state.latest_data), event='tick')
-                
-            while True:
-                async with state.data_condition:
-                    await state.data_condition.wait()
-                
-                if state.latest_data:
-                    await resp.send(json.dumps(state.latest_data), event='tick')
-    except Exception:
-        pass
-    return resp
-
-async def trades_handler(request):
-    return web.json_response(request.app['state'].trade_log[-100:])
-
 async def market_loop(app):
-    state = app['state']
-    api_key = os.getenv("COINSWITCH_API_KEY")
-    secret_key = os.getenv("COINSWITCH_SECRET_KEY")
+    client = CoinSwitchClient(
+        os.getenv("COINSWITCH_API_KEY"),
+        os.getenv("COINSWITCH_SECRET_KEY")
+    )
+    engine = ArbitrageEngine()
     
-    if not api_key or not secret_key or api_key == "your_api_key_here":
-        logging.error("Dashboard: API Keys missing. Cannot start live dashboard.")
-        return
-        
-    balances = {"BTC": 0.25, "INR": 1500000.0, "USDT": 8000.0}
-    engine = ArbitrageEngine(taker_fee=config.TAKER_FEE, tds_rate=config.TDS_RATE)
-    executor = ShadowExecutor(balances, fee=config.TAKER_FEE, tds=config.TDS_RATE)
+    # Initialize condition in the loop context
+    app_state.data_condition = asyncio.Condition()
     
-    from api_client import CoinSwitchClient
-    logging.info("Dashboard: Live API Mode (Shadow Balances)")
+    # Shadow balances for visualization
+    shadow_balances = {s: 1.0 for s in config.SYMBOLS}
+    shadow_balances["INR"] = 100000.0
+    shadow_balances["USDT"] = 1000.0
     
-    async with aiohttp.ClientSession() as session:
-        market = CoinSwitchClient(api_key, secret_key, session=session)
-        cycle = 0
+    cycle = 0
+    async with client:
         while True:
-            cycle += 1
             try:
                 start_time = time.time()
-                books = await market.fetch_triangular_books()
-                fetch_duration = (time.time() - start_time) * 1000
                 
-                opp_data = engine.calculate_triangular_arbitrage(books, balances)
-                opportunity = opp_data["net"]
-                gross_opp = opp_data["gross"]
+                # 1. Fetch all books in parallel
+                tri_books = await client.fetch_triangular_books(config.SYMBOLS)
+                fetch_latency = (time.time() - start_time) * 1000
                 
-                def safe_price(pair, side):
-                    try: return float(books[pair][side][0][0])
-                    except: return 0
+                # 2. Calculate opportunities for all symbols
+                all_opps = engine.calculate_multi_symbol_arbitrage(tri_books, shadow_balances)
                 
-                def get_depth_levels(pair, side, limit=5):
-                    levels = books.get(pair, {}).get(side, [])
-                    return [[float(p), float(q)] for p, q in levels[:limit]]
+                # 3. Update state
+                await app_state.update(all_opps, cycle, fetch_latency)
                 
-                tick = {
-                    "cycle": cycle,
-                    "timestamp": int(time.time() * 1000),
-                    "fetch_latency_ms": round(fetch_duration, 2),
-                    "btc_inr_bid": safe_price("BTC/INR", "bids"),
-                    "btc_inr_ask": safe_price("BTC/INR", "asks"),
-                    "btc_usdt_bid": safe_price("BTC/USDT", "bids"),
-                    "btc_usdt_ask": safe_price("BTC/USDT", "asks"),
-                    "usdt_inr_bid": safe_price("USDT/INR", "bids"),
-                    "usdt_inr_ask": safe_price("USDT/INR", "asks"),
-                    
-                    # Depth Data
-                    "depth": {
-                        "btc_inr": {
-                            "bids": get_depth_levels("BTC/INR", "bids"),
-                            "asks": get_depth_levels("BTC/INR", "asks")
-                        },
-                        "btc_usdt": {
-                            "bids": get_depth_levels("BTC/USDT", "bids"),
-                            "asks": get_depth_levels("BTC/USDT", "asks")
-                        },
-                        "usdt_inr": {
-                            "bids": get_depth_levels("USDT/INR", "bids"),
-                            "asks": get_depth_levels("USDT/INR", "asks")
-                        }
-                    },
-                    
-                    "profit_pct": round(opportunity.get("profit_pct", 0) * 100, 4),
-                    "gross_profit_pct": round(gross_opp.get("profit_pct", 0) * 100, 4),
-                    "opportunity": opportunity["opportunity"],
-                    "direction": opportunity.get("direction", ""),
-                    "profit_inr": round(opportunity.get("expected_profit_inr", 0), 2),
-                    "balances": balances,
-                    "taker_fee": config.TAKER_FEE,
-                    "tds_rate": config.TDS_RATE
-                }
-                
-                if opportunity["opportunity"]:
-                    result = executor.execute(opportunity, books)
-                    balances = result["result_balances"]
-                    state.trade_log.append(tick)
-                    logging.info(f"🚀 Opportunity! {opportunity['direction']} Profit: ₹{opportunity['expected_profit_inr']:.2f}")
-                
-                state.latest_data = tick
-                async with state.data_condition:
-                    state.data_condition.notify_all()
-                
+                cycle += 1
                 if cycle % 20 == 0:
-                    logging.info(f"Dashboard: Active - Cycle {cycle} (Avg Latency: {fetch_duration:.1f}ms)")
-                    
-                await asyncio.sleep(0.05)
+                    logger.info(f"Dashboard: Monitoring {len(config.SYMBOLS)} tokens - Cycle {cycle} (Lat: {fetch_latency:.1f}ms)")
+                
+                # Throttle to avoid rate limits
+                await asyncio.sleep(config.POLLING_INTERVAL) 
+                
             except Exception as e:
-                logging.exception(f"Dashboard Market Loop Error: {e}")
-                await asyncio.sleep(1)
+                logger.error(f"Error in market loop: {e}")
+                await asyncio.sleep(5)
 
 async def start_background_tasks(app):
-    state = AppState()
-    state.data_condition = asyncio.Condition()
-    app['state'] = state
     app['market_task'] = asyncio.create_task(market_loop(app))
 
 async def cleanup_background_tasks(app):
     app['market_task'].cancel()
-    try:
-        await app['market_task']
-    except asyncio.CancelledError:
-        pass
+    await app['market_task']
 
-def create_app():
+def main():
     app = web.Application()
     app.router.add_get('/', index)
-    app.router.add_get('/sse', sse_handler)
-    app.router.add_get('/api/trades', trades_handler)
-    app.router.add_static('/static/', path='./static', name='static')
+    app.router.add_get('/events', sse_handler)
+    app.router.add_static('/static/', path='./static/', name='static')
+    
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
-    return app
+    
+    web.run_app(app, host='0.0.0.0', port=8080)
 
 if __name__ == '__main__':
-    app = create_app()
-    logging.info("Dashboard available at http://localhost:8080")
-    web.run_app(app, host='0.0.0.0', port=8080)
+    main()

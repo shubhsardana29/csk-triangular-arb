@@ -36,112 +36,122 @@ class ArbitrageEngine:
             
         return total_cost / target_qty
 
-    def calculate_triangular_arbitrage(self, books: dict, balances: dict) -> dict:
+    def calculate_multi_symbol_arbitrage(self, tri_books: dict, balances: dict) -> dict:
         """
-        Calculates both Gross (raw spread) and Net (post fees/TDS) opportunities.
-        Uses VWAP based on configured exposure limits.
+        Calculates arbitrage for all symbols in tri_books.
+        Returns a dict mapping Symbol -> {"net": opp, "gross": opp}
         """
-        def _get_path_yield(fee, tds, target_btc=config.MAX_BTC_EXPOSURE, target_inr=config.MAX_INR_EXPOSURE):
-            # Helper to apply sequential fees and TDS
-            # Calculation: Result = (Amount * (1-fee)) * (1-tds)
-            
-            # --- Path 1: SELL BTC/INR (TDS) -> BUY USDT/INR (No TDS) -> BUY BTC/USDT (Selling USDT -> TDS) ---
-            # Leg 1: BTC -> INR
-            vwap1 = self._calculate_vwap(books.get("BTC/INR", {}).get("bids", []), target_btc)
+        results = {}
+        for symbol, books in tri_books.items():
+            results[symbol] = self._calculate_symbol_arbitrage(symbol, books, balances)
+        return results
+
+    def _calculate_symbol_arbitrage(self, symbol: str, books: dict, balances: dict) -> dict:
+        """
+        Inner logic for a single symbol triangle.
+        """
+        symbol = symbol.upper()
+        # Exposure limits from config
+        target_s = config.MAX_EXPOSURES.get(symbol, 0.1)
+        target_inr = config.MAX_EXPOSURES.get("INR", 100000.0)
+
+        def _get_path_yield(fee, tds):
+            # Paths use symbol-specific keys from 'books'
+            s_inr = books.get(f"{symbol}/INR", {})
+            s_usdt = books.get(f"{symbol}/USDT", {})
+            usdt_inr = books.get("USDT/INR", {})
+
+            # --- Path 1: SELL S/INR (TDS) -> BUY USDT/INR (No TDS) -> BUY S/USDT (Selling USDT -> TDS) ---
+            vwap1 = self._calculate_vwap(s_inr.get("bids", []), target_s)
             if vwap1 == 0: p1 = 0
             else:
-                inr_after_leg1 = (target_btc * vwap1) * (1-fee) * (1-tds)
-                # Leg 2: INR -> USDT (Buying USDT with INR does not trigger TDS for buyer)
-                vwap2 = self._calculate_vwap(books.get("USDT/INR", {}).get("asks", []), inr_after_leg1)
+                inr_after_leg1 = (target_s * vwap1) * (1-fee) * (1-tds)
+                vwap2 = self._calculate_vwap(usdt_inr.get("asks", []), inr_after_leg1)
                 if vwap2 == 0: p1 = 0
                 else:
                     usdt_after_leg2 = (inr_after_leg1 / vwap2) * (1-fee)
-                    # Leg 3: USDT -> BTC
-                    leg3_book = books.get("BTC/USDT", {}).get("asks", [])
+                    leg3_book = s_usdt.get("asks", [])
                     ask3 = float(leg3_book[0][0]) if leg3_book else 0
                     if ask3 == 0: p1 = 0
                     else:
-                        # Estimate BTC quantity for VWAP
-                        btc_qty_est = usdt_after_leg2 / ask3
-                        vwap3 = self._calculate_vwap(leg3_book, btc_qty_est)
+                        s_qty_est = usdt_after_leg2 / ask3
+                        vwap3 = self._calculate_vwap(leg3_book, s_qty_est)
                         if vwap3 == 0: p1 = 0
                         else:
-                            btc_final = (usdt_after_leg2 * (1-fee) * (1-tds)) / vwap3
-                            p1 = btc_final / target_btc
+                            s_final = (usdt_after_leg2 * (1-fee) * (1-tds)) / vwap3
+                            p1 = s_final / target_s
 
-            # --- Path 2: SELL BTC/USDT (TDS) -> SELL USDT/INR (TDS) -> BUY BTC/INR (No TDS) ---
-            vwap1 = self._calculate_vwap(books.get("BTC/USDT", {}).get("bids", []), target_btc)
+            # --- Path 2: SELL S/USDT (TDS) -> SELL USDT/INR (TDS) -> BUY S/INR (No TDS) ---
+            vwap1 = self._calculate_vwap(s_usdt.get("bids", []), target_s)
             if vwap1 == 0: p2 = 0
             else:
-                usdt_after_leg1 = (target_btc * vwap1) * (1-fee) * (1-tds)
-                vwap2 = self._calculate_vwap(books.get("USDT/INR", {}).get("bids", []), usdt_after_leg1)
+                usdt_after_leg1 = (target_s * vwap1) * (1-fee) * (1-tds)
+                vwap2 = self._calculate_vwap(usdt_inr.get("bids", []), usdt_after_leg1)
                 if vwap2 == 0: p2 = 0
                 else:
                     inr_after_leg2 = (usdt_after_leg1 * vwap2) * (1-fee) * (1-tds)
-                    leg3_book = books.get("BTC/INR", {}).get("asks", [])
+                    leg3_book = s_inr.get("asks", [])
                     ask3 = float(leg3_book[0][0]) if leg3_book else 0
                     if ask3 == 0: p2 = 0
                     else:
-                        btc_qty_est = inr_after_leg2 / ask3
-                        vwap3 = self._calculate_vwap(leg3_book, btc_qty_est)
+                        s_qty_est = inr_after_leg2 / ask3
+                        vwap3 = self._calculate_vwap(leg3_book, s_qty_est)
                         if vwap3 == 0: p2 = 0
                         else:
-                            btc_final = (inr_after_leg2 * (1-fee)) / vwap3
-                            p2 = btc_final / target_btc
+                            s_final = (inr_after_leg2 * (1-fee)) / vwap3
+                            p2 = s_final / target_s
 
-            # --- Path 3: BUY BTC/INR (No TDS) -> SELL BTC/USDT (TDS) -> SELL USDT/INR (TDS) ---
-            leg1_book = books.get("BTC/INR", {}).get("asks", [])
+            # --- Path 3: BUY S/INR (No TDS) -> SELL S/USDT (TDS) -> SELL USDT/INR (TDS) ---
+            leg1_book = s_inr.get("asks", [])
             ask1 = float(leg1_book[0][0]) if leg1_book else 0
             if ask1 == 0: p3 = 0
             else:
-                # Estimate BTC quantity for VWAP spending target_inr
-                btc_qty_est = target_inr / ask1
-                vwap1 = self._calculate_vwap(leg1_book, btc_qty_est)
+                s_qty_est = target_inr / ask1
+                vwap1 = self._calculate_vwap(leg1_book, s_qty_est)
                 if vwap1 == 0: p3 = 0
                 else:
-                    btc_after_leg1 = (target_inr * (1-fee)) / vwap1
-                    vwap2 = self._calculate_vwap(books.get("BTC/USDT", {}).get("bids", []), btc_after_leg1)
+                    s_after_leg1 = (target_inr * (1-fee)) / vwap1
+                    vwap2 = self._calculate_vwap(s_usdt.get("bids", []), s_after_leg1)
                     if vwap2 == 0: p3 = 0
                     else:
-                        usdt_after_leg2 = (btc_after_leg1 * vwap2) * (1-fee) * (1-tds)
-                        vwap3 = self._calculate_vwap(books.get("USDT/INR", {}).get("bids", []), usdt_after_leg2)
+                        usdt_after_leg2 = (s_after_leg1 * vwap2) * (1-fee) * (1-tds)
+                        vwap3 = self._calculate_vwap(usdt_inr.get("bids", []), usdt_after_leg2)
                         if vwap3 == 0: p3 = 0
                         else:
                             inr_final = (usdt_after_leg2 * vwap3) * (1-fee) * (1-tds)
                             p3 = inr_final / target_inr
 
-            # --- Path 4: BUY USDT/INR (No TDS) -> BUY BTC/USDT (Selling USDT -> TDS) -> SELL BTC/INR (TDS) ---
-            vwap1 = self._calculate_vwap(books.get("USDT/INR", {}).get("asks", []), target_inr)
+            # --- Path 4: BUY USDT/INR (No TDS) -> BUY S/USDT (Selling USDT -> TDS) -> SELL S/INR (TDS) ---
+            vwap1 = self._calculate_vwap(usdt_inr.get("asks", []), target_inr)
             if vwap1 == 0: p4 = 0
             else:
                 usdt_after_leg1 = (target_inr / vwap1) * (1-fee)
-                leg2_book = books.get("BTC/USDT", {}).get("asks", [])
+                leg2_book = s_usdt.get("asks", [])
                 ask2 = float(leg2_book[0][0]) if leg2_book else 0
                 if ask2 == 0: p4 = 0
                 else:
-                    btc_qty_est = usdt_after_leg1 / ask2
-                    vwap2 = self._calculate_vwap(leg2_book, btc_qty_est)
+                    s_qty_est = usdt_after_leg1 / ask2
+                    vwap2 = self._calculate_vwap(leg2_book, s_qty_est)
                     if vwap2 == 0: p4 = 0
                     else:
-                        btc_after_leg2 = (usdt_after_leg1 * (1-fee) * (1-tds)) / vwap2
-                        vwap3 = self._calculate_vwap(books.get("BTC/INR", {}).get("bids", []), btc_after_leg2)
-                    if vwap3 == 0: p4 = 0
-                    else:
-                        inr_final = (btc_after_leg2 * vwap3) * (1-fee) * (1-tds)
-                        p4 = inr_final / target_inr
+                        s_after_leg2 = (usdt_after_leg1 * (1-fee) * (1-tds)) / vwap2
+                        vwap3 = self._calculate_vwap(s_inr.get("bids", []), s_after_leg2)
+                        if vwap3 == 0: p4 = 0
+                        else:
+                            inr_final = (s_after_leg2 * vwap3) * (1-fee) * (1-tds)
+                            p4 = inr_final / target_inr
             
             return [p1, p2, p3, p4]
 
-        # Calculate NET (with fees/TDS)
+        # Calculate NET & GROSS
         net_paths = [p - 1.0 for p in _get_path_yield(self.fee, self.tds)]
-        # Calculate GROSS (zero fees/TDS)
         gross_paths = [p - 1.0 for p in _get_path_yield(0.0, 0.0)]
 
         directions = [
-            "SELL BTC/INR -> BUY USDT/INR -> BUY BTC/USDT",
-            "SELL BTC/USDT -> SELL USDT/INR -> BUY BTC/INR",
-            "BUY BTC/INR -> SELL BTC/USDT -> SELL USDT/INR",
-            "BUY USDT/INR -> BUY BTC/USDT -> SELL BTC/INR"
+            f"SELL {symbol}/INR -> BUY USDT/INR -> BUY {symbol}/USDT",
+            f"SELL {symbol}/USDT -> SELL USDT/INR -> BUY {symbol}/INR",
+            f"BUY {symbol}/INR -> SELL {symbol}/USDT -> SELL USDT/INR",
+            f"BUY USDT/INR -> BUY {symbol}/USDT -> SELL {symbol}/INR"
         ]
 
         def find_best(paths):
@@ -152,11 +162,10 @@ class ArbitrageEngine:
                     max_val = p
                     best_idx = i
             
-            base = "BTC" if best_idx < 2 else "INR"
-            # Use real limits from config
-            target_exposure = config.MAX_BTC_EXPOSURE if base == "BTC" else config.MAX_INR_EXPOSURE
+            base = symbol if best_idx < 2 else "INR"
+            target_exposure = config.MAX_EXPOSURES.get(base, 100000.0)
             
-            opp = self._build_opportunity(directions[best_idx], max_val, (1.0 + max_val) * target_exposure, books, balances, base)
+            opp = self._build_opportunity(symbol, directions[best_idx], max_val, books, balances, base, target_exposure)
             
             if max_val <= 0.0001:
                 opp["opportunity"] = False
@@ -169,27 +178,29 @@ class ArbitrageEngine:
             "gross": find_best(gross_paths)
         }
 
-    def _build_opportunity(self, direction, profit_pct, final_amt, books, balances, base_currency):
+    def _build_opportunity(self, symbol, direction, profit_pct, books, balances, base_currency, limit_amt):
         """
         Calculates max executable quantity based on limits and balances
         """
-        if base_currency == "BTC":
-            limit = config.MAX_BTC_EXPOSURE
-            executable_amt = min(limit, balances["BTC"])
-            btc_price = float(books["BTC/INR"]["bids"][0][0]) if books["BTC/INR"]["bids"] else 0
-            profit_inr = profit_pct * executable_amt * btc_price
+        executable_amt = min(limit_amt, balances.get(base_currency, 0))
+        
+        # Estimate INR profit
+        if base_currency == symbol:
+            s_inr_book = books.get(f"{symbol}/INR", {}).get("bids", [])
+            s_price = float(s_inr_book[0][0]) if s_inr_book else 0
+            profit_inr = profit_pct * executable_amt * s_price
         else:
-            limit = config.MAX_INR_EXPOSURE
-            executable_amt = min(limit, balances["INR"])
             profit_inr = profit_pct * executable_amt
         
         return {
+            "symbol": symbol,
             "opportunity": True,
             "direction": direction,
             "executable_qty": executable_amt,
             "base_currency": base_currency,
             "expected_profit_inr": profit_inr,
-            "profit_pct": profit_pct
+            "profit_pct": profit_pct,
+            "depth": books  # Include depth for UI rendering
         }
 
 class ShadowExecutor:
@@ -199,72 +210,66 @@ class ShadowExecutor:
         self.tds = tds
         
     def execute(self, opportunity: dict, price_data: dict) -> dict:
+        symbol = opportunity["symbol"]
         direction = opportunity["direction"]
         qty = opportunity["executable_qty"]
+        base_currency = opportunity["base_currency"]
         
-        tot_val_start = self._total_inr_value(price_data)
-        btc_start = self.balances.get("BTC", 0)
-        inr_start = self.balances.get("INR", 0)
+        # Initial stats
+        pre_balance_s = self.balances.get(symbol, 0)
+        pre_balance_inr = self.balances.get("INR", 0)
         
         # Helper for sequential fee+tds on SELL legs
         def sell_vda(amount, price):
             return amount * price * (1 - self.fee) * (1 - self.tds)
             
-        # Helper for sequential fee on BUY legs (INR/USDT buy)
+        # Helper for sequential fee on BUY legs
         def buy_vda(amount_base, price, tds_on_base=False):
-            # amount_base is what we are spending (INR or USDT)
             if tds_on_base:
                 net_spend = amount_base * (1 - self.fee) * (1 - self.tds)
             else:
                 net_spend = amount_base * (1 - self.fee)
             return net_spend / price
 
-        if "SELL BTC/INR" in direction:
-            # Path 1: BTC -> INR (TDS) -> USDT (Buy) -> BTC (Sell USDT -> TDS)
-            inr_gained = sell_vda(qty, float(price_data["BTC/INR"]["bids"][0][0]))
-            usdt_gained = buy_vda(inr_gained, float(price_data["USDT/INR"]["asks"][0][0]), tds_on_base=False)
-            btc_final = buy_vda(usdt_gained, float(price_data["BTC/USDT"]["asks"][0][0]), tds_on_base=True) # Selling USDT to buy BTC
+        # We assume price_data is the 'books' dict for this specific symbol
+        s_inr = price_data.get(f"{symbol}/INR", {})
+        s_usdt = price_data.get(f"{symbol}/USDT", {})
+        usdt_inr = price_data.get("USDT/INR", {})
+
+        if f"SELL {symbol}/INR" in direction:
+            # Path 1: S -> INR (TDS) -> USDT (Buy) -> S (Sell USDT -> TDS)
+            inr_gained = sell_vda(qty, float(s_inr["bids"][0][0]))
+            usdt_gained = buy_vda(inr_gained, float(usdt_inr["asks"][0][0]))
+            s_final = buy_vda(usdt_gained, float(s_usdt["asks"][0][0]), tds_on_base=True)
+            self.balances[symbol] -= qty
+            self.balances[symbol] = self.balances.get(symbol, 0) + s_final
             
-            self.balances["BTC"] -= qty
-            self.balances["BTC"] += btc_final
-            
-        elif "SELL BTC/USDT" in direction and "BUY BTC/INR" in direction:
-            # Path 2: BTC -> USDT (TDS) -> INR (TDS) -> BTC (Buy)
-            usdt_gained = sell_vda(qty, float(price_data["BTC/USDT"]["bids"][0][0]))
-            inr_gained = sell_vda(usdt_gained, float(price_data["USDT/INR"]["bids"][0][0]))
-            btc_final = buy_vda(inr_gained, float(price_data["BTC/INR"]["asks"][0][0]), tds_on_base=False)
-            
-            self.balances["BTC"] -= qty
-            self.balances["BTC"] += btc_final
+        elif f"SELL {symbol}/USDT" in direction and f"BUY {symbol}/INR" in direction:
+            # Path 2: S -> USDT (TDS) -> INR (TDS) -> S (Buy)
+            usdt_gained = sell_vda(qty, float(s_usdt["bids"][0][0]))
+            inr_gained = sell_vda(usdt_gained, float(usdt_inr["bids"][0][0]))
+            s_final = buy_vda(inr_gained, float(s_inr["asks"][0][0]))
+            self.balances[symbol] -= qty
+            self.balances[symbol] = self.balances.get(symbol, 0) + s_final
  
-        elif "BUY BTC/INR" in direction and "SELL BTC/USDT" in direction:
-            # Path 3: INR -> BTC (Buy) -> USDT (Sell BTC -> TDS) -> INR (Sell USDT -> TDS)
-            btc_gained = buy_vda(qty, float(price_data["BTC/INR"]["asks"][0][0]), tds_on_base=False)
-            usdt_gained = sell_vda(btc_gained, float(price_data["BTC/USDT"]["bids"][0][0]))
-            inr_final = sell_vda(usdt_gained, float(price_data["USDT/INR"]["bids"][0][0]))
-            
+        elif f"BUY {symbol}/INR" in direction and f"SELL {symbol}/USDT" in direction:
+            # Path 3: INR -> S (Buy) -> USDT (Sell S -> TDS) -> INR (Sell USDT -> TDS)
+            s_gained = buy_vda(qty, float(s_inr["asks"][0][0]))
+            usdt_gained = sell_vda(s_gained, float(s_usdt["bids"][0][0]))
+            inr_final = sell_vda(usdt_gained, float(usdt_inr["bids"][0][0]))
             self.balances["INR"] -= qty
             self.balances["INR"] += inr_final
  
-        elif "BUY USDT/INR" in direction and "BUY BTC/USDT" in direction:
-            # Path 4: INR -> USDT (Buy) -> BTC (Buy USDT -> TDS) -> INR (Sell BTC -> TDS)
-            usdt_gained = buy_vda(qty, float(price_data["USDT/INR"]["asks"][0][0]), tds_on_base=False)
-            btc_gained = buy_vda(usdt_gained, float(price_data["BTC/USDT"]["asks"][0][0]), tds_on_base=True) # Selling USDT
-            inr_final = sell_vda(btc_gained, float(price_data["BTC/INR"]["bids"][0][0]))
-            
+        elif f"BUY USDT/INR" in direction and f"BUY {symbol}/USDT" in direction:
+            # Path 4: INR -> USDT (Buy) -> S (Buy USDT -> TDS) -> INR (Sell S -> TDS)
+            usdt_gained = buy_vda(qty, float(usdt_inr["asks"][0][0]))
+            s_gained = buy_vda(usdt_gained, float(s_usdt["asks"][0][0]), tds_on_base=True)
+            inr_final = sell_vda(s_gained, float(s_inr["bids"][0][0]))
             self.balances["INR"] -= qty
             self.balances["INR"] += inr_final
             
-        tot_val_end = self._total_inr_value(price_data)
-        
         return {
             "result_balances": self.balances.copy(),
-            "btc_variance": self.balances["BTC"] - btc_start,
-            "total_value_increase_inr": tot_val_end - tot_val_start
+            "symbol_variance": self.balances.get(symbol, 0) - pre_balance_s,
+            "inr_variance": self.balances.get("INR", 0) - pre_balance_inr
         }
-        
-    def _total_inr_value(self, price_data):
-        inr = self.balances["INR"]
-        btc_in_inr = self.balances["BTC"] * float(price_data["BTC/INR"]["bids"][0][0]) if price_data["BTC/INR"]["bids"] else 0
-        usdt_in_inr = self.balances["USDT"] * float(price_data["USDT/INR"]["bids"][0][0]) if price_data["USDT/INR"]["bids"] else 0
-        return inr + btc_in_inr + usdt_in_inr

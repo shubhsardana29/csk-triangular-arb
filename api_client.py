@@ -5,6 +5,9 @@ from urllib.parse import urlparse, urlencode
 from cryptography.hazmat.primitives.asymmetric import ed25519
 import aiohttp
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 
 class CoinSwitchClient:
     def __init__(self, api_key: str, secret_key: str, session: aiohttp.ClientSession = None):
@@ -12,6 +15,17 @@ class CoinSwitchClient:
         self.secret_key = secret_key
         self.base_url = "https://coinswitch.co"
         self.session = session
+        self._owned_session = False
+
+    async def __aenter__(self):
+        if self.session is None:
+            self.session = aiohttp.ClientSession()
+            self._owned_session = True
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._owned_session and self.session:
+            await self.session.close()
         
     def _generate_signature(self, method: str, endpoint: str, params: dict, epoch_time: str) -> str:
         unquote_endpoint = endpoint
@@ -53,60 +67,76 @@ class CoinSwitchClient:
             exchange = "binance"
             
         params = {"symbol": symbol, "exchange": exchange}
-        
         url = self.base_url + endpoint
         headers = self._get_headers("GET", endpoint, params)
         
-        if self.session:
-            async with self.session.get(url, headers=headers, params=params, timeout=5) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    return data.get("data", data)
-                else:
-                    text = await response.text()
-                    raise Exception(f"Failed to fetch depth for {symbol}: {response.status} - {text}")
-        else:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, headers=headers, params=params, timeout=5) as response:
+        try:
+            if self.session:
+                async with self.session.get(url, headers=headers, params=params, timeout=2) as response:
                     if response.status == 200:
                         data = await response.json()
                         return data.get("data", data)
+                    elif response.status == 429:
+                        logger.warning(f"RATE LIMIT (429) for {symbol} on {exchange}")
+                        return {"bids": [], "asks": []}
                     else:
                         text = await response.text()
-                        raise Exception(f"Failed to fetch depth for {symbol}: {response.status} - {text}")
+                        logger.error(f"API Error {response.status} for {symbol}: {text[:100]}")
+                        return {"bids": [], "asks": []}
+            else:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(url, headers=headers, params=params, timeout=2) as response:
+                        if response.status == 200:
+                            data = await response.json()
+                            return data.get("data", data)
+                        else:
+                            return {"bids": [], "asks": []}
+        except Exception as e:
+            logger.error(f"Connection Error for {symbol}: {str(e)}")
+            return {"bids": [], "asks": []}
 
-    async def fetch_triangular_books(self) -> dict:
+    async def fetch_triangular_books(self, symbols: list = None) -> dict:
         """
-        Fetches live books for BTC/INR, USDT/INR from CoinSwitchX, 
-        and aggregates BTC/USDT from both Binance and Kucoin to find the best price.
+        Fetches live books for S/INR, USDT/INR, and S/USDT for all provided symbols.
+        Deduplicates common pairs (like USDT/INR) to save API calls.
         """
-        tasks = [
-            self.get_depth("btc/inr", "coinswitchx"),
-            self.get_depth("usdt/inr", "coinswitchx"),
-            self.get_depth("btc/usdt", "binance"),
-            self.get_depth("btc/usdt", "kucoin")
-        ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        books = {}
-        
-        def safe_get(res, key):
-            if isinstance(res, Exception): return []
-            return res.get(key, [])
+        if symbols is None:
+            import config
+            symbols = config.SYMBOLS
             
-        books["BTC/INR"] = {"bids": safe_get(results[0], "bids"), "asks": safe_get(results[0], "asks")}
-        books["USDT/INR"] = {"bids": safe_get(results[1], "bids"), "asks": safe_get(results[1], "asks")}
+        # Deduplicate required pairs
+        # 1. S/INR for each S
+        # 2. S/USDT for each S
+        # 3. USDT/INR (Common)
         
-        # Aggregate Binance and Kucoin C2C
-        binance_bids = safe_get(results[2], "bids")
-        binance_asks = safe_get(results[2], "asks")
-        kucoin_bids = safe_get(results[3], "bids")
-        kucoin_asks = safe_get(results[3], "asks")
+        pairs = [("usdt/inr", "coinswitchx")] # Start with common pair
+        for s in symbols:
+            s_lower = s.lower()
+            pairs.append((f"{s_lower}/inr", "coinswitchx"))
+            pairs.append((f"{s_lower}/usdt", "binance")) # default to binance for C2C
+            
+        tasks = [self.get_depth(p[0], p[1]) for p in pairs]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Combine and sort to natively put the best prices at index 0
-        merged_bids = sorted(binance_bids + kucoin_bids, key=lambda x: float(x[0]), reverse=True)
-        merged_asks = sorted(binance_asks + kucoin_asks, key=lambda x: float(x[0]), reverse=False)
+        # Build raw depth map
+        depth_map = {}
+        for i, res in enumerate(results):
+            pair_key = pairs[i][0].upper()
+            if isinstance(res, Exception):
+                depth_map[pair_key] = {"bids": [], "asks": []}
+            else:
+                depth_map[pair_key] = {"bids": res.get("bids", []), "asks": res.get("asks", [])}
+                
+        # Group by Symbol for the engine
+        tri_books = {}
+        common_usdt_inr = depth_map.get("USDT/INR", {"bids": [], "asks": []})
         
-        books["BTC/USDT"] = {"bids": merged_bids, "asks": merged_asks}
-        
-        return books
+        for s in symbols:
+            s_upper = s.upper()
+            tri_books[s_upper] = {
+                f"{s_upper}/INR": depth_map.get(f"{s_upper.lower()}/inr".upper(), {"bids": [], "asks": []}),
+                f"{s_upper}/USDT": depth_map.get(f"{s_upper.lower()}/usdt".upper(), {"bids": [], "asks": []}),
+                "USDT/INR": common_usdt_inr
+            }
+            
+        return tri_books
