@@ -4,10 +4,11 @@ A high-frequency, low-latency triangular arbitrage trading system for **CoinSwit
 
 ---
 
-## ⚡ Performance Benchmarks
+## ⚡ Performance & Safety
 - **Update Frequency:** ~8-14 Hz (8-14 cycles per second).
 - **Core Latency:** ~70ms per API fetch cycle.
-- **Connection Logic:** Persistent HTTP sessions with keep-alive to eliminate TCP/TLS handshake overhead.
+- **Liquidity Awareness:** Uses **VWAP (Volume Weighted Average Price)** calculations to account for order book depth and prevent slippage.
+- **Sequential Math:** Implements realistic `Amount * (1-fee) * (1-tds)` logic for accurate P&L estimation.
 - **Real-time Streaming:** Event-driven SSE (Server-Sent Events) for instantaneous UI updates.
 
 ---
@@ -30,23 +31,23 @@ The engine simultaneously tracks **Buy-First** and **Sell-First** scenarios:
 
 Arbitrage is only profitable if the spread exceeds the "Toll" taken by the exchange and the government.
 
-### 1. Exchange Trading Fees
-The system supports configurable fees (defaulting to **0.1% taker fee** for VIP tiers). Since a triangular cycle involves **3 trades**, the system calculates net profitability after compounding these fees.
-- **Formula**: `Profit = (1 - fee)^3` must be `> 1.0` for gross profit.
+### 1. Sequential Fee Application
+The system applies fees and taxes sequentially to reflect real-world exchange ledgers:
+- **Formula**: `Net = Gross * (1 - TakerFee) * (1 - TDS)`
+- Defaulting to **0.1% taker fee** (VIP tier) and **1% TDS**.
 
 ### 2. TDS (1% Tax Deducted at Source)
-Under Indian Tax Law, a **1% TDS** is applicable on the **Sell Side** of every VDA (Virtual Digital Asset) transaction.
-- In our cycles, every "Sell" leg triggers a 1% withhold.
-- The engine computes **Net P&L** by accounting for both taker fees and TDS logs.
+Under Indian Tax Law, a **1% TDS** is applicable on the **Sell Side** of every Virtual Digital Asset (VDA) transaction.
+- The engine intelligently applies TDS only on VDA-sale legs (BTC or USDT sales).
+- INR-to-VDA buy legs are correctly exempted from the engine's tax deduction model.
 
 ---
 
 ## 🛠️ System Architecture
 
-- **Low-Latency Aggregator**: Uses `aiohttp` persistent sessions to maintain open connections to CoinSwitch, reducing fetch times by ~72%.
+- **Hardened Execution Engine**: `arbitrage_engine.py` is zero-constant and dynamic. It calculates the actual fill price based on market depth (VWAP) for your specific trade size.
+- **Low-Latency Aggregator**: Uses `aiohttp` persistent sessions to maintain open connections, reducing fetch times by ~72%.
 - **`api_client.py`**: Handles ed25519 signature generation and authenticated REST requests with session pooling.
-- **`arbitrage_engine.py`**: High-performance math engine for spread calculation and "Shadow Execution".
-- **`dashboard.py`**: Optimized SSE server using an app-bound state machine for 100% stable real-time streaming.
 - **Visual Dashboard**: Premium OKLCH-themed UI with:
   - **Live Orderbook Depth**: Top 5 levels of bids/asks for all trading pairs.
   - **Real-time Metrics**: Compounded spread charts and high-resolution cycle counters.
@@ -76,7 +77,7 @@ Under Indian Tax Law, a **1% TDS** is applicable on the **Sell Side** of every V
 
 ## 🔒 Security
 - **No Private Keys**: Uses API-level ed25519 credential keys only.
-- **Shadow Mode**: By default, the `ShadowExecutor` is active. It logs theoretical trades to prove profitability without executing real orders.
+- **Shadow Mode**: By default, the `ShadowExecutor` is active. It logs theoretical trades with accurate tax/fee impacts to prove profitability.
 
 > [!IMPORTANT]
-> To enable live trading, the `POST /trade/api/v2/order` logic in `api_client.py` must be configured for your account and risk limits.
+> To enable live trading, the `POST /trade/api/v2/order` logic in `api_client.py` must be configured for your account and risk limits in `config.py`.

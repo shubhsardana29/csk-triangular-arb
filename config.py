@@ -10,6 +10,12 @@ TAKER_FEE = float(os.getenv("TAKER_FEE", 0.005))
 # TDS Rate: 0.01 for 1%
 TDS_RATE = float(os.getenv("TDS_RATE", 0.01))
 
+# Trade Limits (Per-trade exposure)
+MAX_BTC_EXPOSURE = 0.1
+MAX_INR_EXPOSURE = 100000
+
 print(f"--- Config Loaded ---")
 print(f"Taker Fee: {TAKER_FEE*100:.2f}%")
 print(f"TDS Rate:  {TDS_RATE*100:.2f}%")
+print(f"BTC Limit: {MAX_BTC_EXPOSURE} BTC")
+print(f"INR Limit: ₹{MAX_INR_EXPOSURE:,}")
