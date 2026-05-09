@@ -266,8 +266,12 @@ class TriEngine:
             s_inr  = self._csk_ws.books.get(f"{symbol}/INR", Depth.empty()) if self._csk_ws       else Depth.empty()
             s_usdt = self._binance_feed.books.get(symbol, Depth.empty())     if self._binance_feed else Depth.empty()
 
-            # Only include a symbol if at least one side has live data.
-            if not s_inr.bids and not s_inr.asks and not s_usdt.bids and not s_usdt.asks:
+            # Require all three legs to have a live bid AND ask before ranking.
+            # A partial book (e.g. CSK data but no Binance data yet) produces
+            # zero VWAP on the missing leg, which shows as -100% on the dashboard.
+            if not (s_inr.bids and s_inr.asks
+                    and s_usdt.bids and s_usdt.asks
+                    and usdt_inr.bids and usdt_inr.asks):
                 continue
 
             books[symbol] = TriBook(

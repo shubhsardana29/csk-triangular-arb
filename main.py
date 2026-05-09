@@ -119,7 +119,6 @@ async def main() -> None:
             symbols = await client.discover_symbols(
                 whitelist=config.SYMBOLS_WHITELIST,
                 blacklist=config.SYMBOLS_BLACKLIST,
-                max_symbols=config.MAX_SYMBOLS,
             )
             if not symbols:
                 log.error("Symbol discovery returned 0 eligible symbols — exiting")

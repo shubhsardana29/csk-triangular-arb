@@ -68,6 +68,8 @@ def _path_to_dict(path: PathResult) -> dict:
         "yield_ratio":         path.yield_ratio,
     }
 
+SSE_PUSH_INTERVAL_S = 0.5   # push to browser at 2 Hz regardless of engine tick rate
+
 class AppState:
     def __init__(self):
         self.data = {
@@ -84,6 +86,7 @@ class AppState:
         self._last_execution = {}
         self._cumulative_pnl = {}
         self._pnl_history = {}
+        self._last_push_ts: float = 0.0   # throttle SSE pushes
 
     def _push_event(self, symbol: str, level: str, title: str, detail: str):
         # Keep only a short rolling event feed per symbol for the modal UI.
@@ -160,6 +163,12 @@ class AppState:
 
         self._previous_symbols = symbol_data
 
+        now = time.time()
+        if now - self._last_push_ts < SSE_PUSH_INTERVAL_S:
+            # Engine ticks at 10Hz but SSE only needs 2Hz — skip this push.
+            return
+        self._last_push_ts = now
+
         async with self.data_condition:
             self.data["symbols"] = symbol_data
             self.data["shadow_inventory"] = shadow_inventory
@@ -167,7 +176,7 @@ class AppState:
             self.data["cycle_count"] = cycle
             self.data["last_latency"] = f"{latency:.1f}ms"
             self.data["status"] = "Active"
-            self.data["last_update"] = time.time()
+            self.data["last_update"] = now
             self.data_condition.notify_all()
 
 app_state = AppState()
@@ -185,6 +194,7 @@ async def sse_handler(request):
                 except (ClientConnectionResetError, ConnectionResetError, asyncio.CancelledError):
                     logger.info("SSE client disconnected")
                     break
+    return resp
 
 async def index(request):
     return web.FileResponse('./static/index.html')
@@ -282,7 +292,6 @@ async def market_loop(app):
             symbols = await client.discover_symbols(
                 whitelist=config.SYMBOLS_WHITELIST,
                 blacklist=config.SYMBOLS_BLACKLIST,
-                max_symbols=config.MAX_SYMBOLS,
             )
             if not symbols:
                 logger.error("Symbol discovery returned 0 symbols — aborting")

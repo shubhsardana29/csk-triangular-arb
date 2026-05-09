@@ -245,18 +245,30 @@ class TriRanker:
         # paths 3/4 are INR-start (use INR balance).
         base          = symbol if best_idx < 2 else "INR"
         target_exp    = target_s if base == symbol else config.MAX_EXPOSURES.get("INR", target_inr)
-        executable    = min(target_exp, balances.get(base, _ZERO))
+        balance       = balances.get(base, _ZERO)
+        executable    = min(target_exp, balance)
 
         mark = tri_book.s_inr.bid
+
+        # When balance is 0, show the theoretical target qty and the projected
+        # profit it would generate — so the dashboard shows meaningful numbers
+        # rather than 0s. opportunity stays False due to no_balance check below.
+        display_qty = executable if balance > _ZERO else target_exp
         profit_inr = (
-            profit_pct * executable * mark if base == symbol
-            else profit_pct * executable
+            profit_pct * display_qty * mark if base == symbol
+            else profit_pct * display_qty
         )
 
-        opportunity = with_costs and profit_pct >= self.min_profit_pct
+        no_balance  = balance <= _ZERO
+        opportunity = with_costs and profit_pct >= self.min_profit_pct and not no_balance
         reason = ""
         if with_costs and not opportunity:
-            reason = "Spread < costs" if profit_pct < _ZERO else "Spread < threshold"
+            if no_balance:
+                reason = f"No {base} balance"
+            elif profit_pct < _ZERO:
+                reason = "Spread < costs"
+            else:
+                reason = "Spread < threshold"
 
         return PathResult(
             path_id=best_idx + 1,
@@ -267,7 +279,7 @@ class TriRanker:
             thesis=meta[best_idx]["thesis"],
             yield_ratio=yield_ratio,
             profit_pct=profit_pct,
-            executable_qty=executable,
+            executable_qty=display_qty,
             base_currency=base,
             expected_profit_inr=profit_inr,
             opportunity=opportunity,

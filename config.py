@@ -55,10 +55,6 @@ SYMBOLS_BLACKLIST: list[str] = [s.strip().upper() for s in _bl.split(",") if s.s
     "USDC", "USDT", "BUSD", "DAI",
 ]
 
-# Hard cap on discovered symbols — protects WS feeds from being overwhelmed.
-# Without a whitelist, discovery can return 300+ symbols.
-# Override via MAX_SYMBOLS env var.
-MAX_SYMBOLS: int = int(os.getenv("MAX_SYMBOLS", "50"))
 
 # Fallback symbol list — used when dynamic discovery is skipped (REST mode / offline).
 SYMBOLS: list[str] = [

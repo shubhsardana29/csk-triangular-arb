@@ -134,7 +134,10 @@ class CSKPublicWS:
             try:
                 bids = _parse_levels(data.get("bids") or [])
                 asks = _parse_levels(data.get("asks") or [])
-                self.books[instrument] = Depth(bids=bids, asks=asks)
+                # Normalize "BTC,INR" → "BTC/INR" so the rest of the system
+                # can use a single consistent key format.
+                key = instrument.replace(",", "/")
+                self.books[key] = Depth(bids=bids, asks=asks)
                 self._last_msg_ts = time()
             except Exception:
                 log.exception(

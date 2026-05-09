@@ -264,18 +264,14 @@ class CoinSwitchClient:
         self,
         whitelist: Optional[list[str]] = None,
         blacklist: Optional[list[str]] = None,
-        max_symbols: int = 50,
     ) -> list[str]:
         """Discover all symbols eligible for triangular arbitrage.
 
         Eligible = has an active S/INR pair on coinswitchx AND an active
         S/USDT pair on binance (C2C). Returns sorted list of base symbols.
 
-        whitelist:   if non-empty, only these symbols are considered.
-        blacklist:   these symbols are always excluded.
-        max_symbols: hard cap on the result size. Without a whitelist the raw
-                     intersection can exceed 300 symbols, which overwhelms the
-                     WebSocket feeds. Capped at 50 by default.
+        whitelist: if non-empty, only these symbols are considered.
+        blacklist: these symbols are always excluded.
         """
         whitelist = [s.upper() for s in (whitelist or [])]
         blacklist = {s.upper() for s in (blacklist or [])}
@@ -287,41 +283,28 @@ class CoinSwitchClient:
         spot_prices  = _collect_last_price_map(spot_tickers)
         cross_prices = _collect_last_price_map(cross_tickers)
 
-        # Symbols with S/INR on CSK
         inr_bases = {
             sym.split("/")[0]
             for sym in spot_prices
             if sym.endswith("/INR") and "/" in sym
         }
-        # Symbols with S/USDT on Binance C2C
         usdt_bases = {
             sym.split("/")[0]
             for sym in cross_prices
             if sym.endswith("/USDT") and "/" in sym
         }
 
-        eligible = (inr_bases & usdt_bases) - {"USDT"}  # exclude USDT itself
+        eligible = (inr_bases & usdt_bases) - {"USDT"}
 
         if whitelist:
             eligible &= set(whitelist)
         eligible -= blacklist
 
         result = sorted(eligible)
-
-        if len(result) > max_symbols:
-            if not whitelist:
-                logger.warning(
-                    "discover_symbols: %d eligible symbols found but no SYMBOLS_WHITELIST set. "
-                    "Capping at %d to protect WS feeds. "
-                    "Set SYMBOLS_WHITELIST in .env to choose which symbols to trade.",
-                    len(result), max_symbols,
-                )
-            result = result[:max_symbols]
-
         logger.info(
             "discover_symbols: %d symbols (inr=%d usdt=%d whitelist=%s blacklist=%d)",
             len(result), len(inr_bases), len(usdt_bases),
-            whitelist or "capped", len(blacklist),
+            whitelist or "all", len(blacklist),
         )
         return result
 
