@@ -1,15 +1,3 @@
-"""CoinSwitch public socket.io WebSocket — INR depth and USDT/INR rate.
-
-Subscribes to DEPTH_UPDATE for every `{symbol}/INR` instrument and for
-USDT/INR (FX rate + USDT/INR book).
-
-Architecture note: strategy/ never imports this. TriEngine receives it as
-an injected dependency so the strategy layer stays exchange-agnostic.
-
-Adapted from simple-arb's csk/ws_client.py for the Depth type used here
-(tuple-based levels instead of PriceLevel dataclasses).
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -23,31 +11,28 @@ from core.models import Depth
 
 log = logging.getLogger(__name__)
 
-CSK_WS_URL = "wss://exchange-websocket.coinswitch.co/"
-_USDT_INR   = "USDT/INR"
+CSK_WS_URL = "wss://ws.coinswitch.co/"
+CSK_NAMESPACE = "/coinswitchx"
+CSK_SOCKETIO_PATH = "pro/realtime-rates-socket/spot/coinswitchx"
+_USDT_INR = "USDT,INR"  # Note: pair format is "BTC,INR" not "BTC/INR"
 
 
-def _parse_levels(raw: list[dict]) -> tuple[tuple[Decimal, Decimal], ...]:
-    """Convert CSK DEPTH_UPDATE levels [{"price": "...", "quantity": "..."}] to Depth tuples."""
+def _parse_levels(raw: list[list[str]]) -> tuple[tuple[Decimal, Decimal], ...]:
+    """Convert CSK order book levels [[price, quantity], ...] to Depth tuples."""
     out: list[tuple[Decimal, Decimal]] = []
     for lvl in raw:
         try:
-            p = Decimal(str(lvl["price"]))
-            q = Decimal(str(lvl["quantity"]))
+            p = Decimal(str(lvl[0]))
+            q = Decimal(str(lvl[1]))
             if p > 0 and q > 0:
                 out.append((p, q))
-        except (KeyError, ValueError, Exception):
+        except (IndexError, ValueError, Exception):
             pass
     return tuple(out)
 
 
 class CSKPublicWS:
-    """Live INR depth + USDT/INR rate via CSK socket.io WebSocket.
-
-    books[instrument]  → Depth snapshot keyed by instrument string
-                         e.g. "BTC/INR", "USDT/INR"
-    age_s()            → seconds since last DEPTH_UPDATE (staleness)
-    """
+    """Live INR depth + USDT/INR rate via CSK socket.io WebSocket."""
 
     def __init__(self, ws_url: str = CSK_WS_URL):
         self.ws_url = ws_url
@@ -66,21 +51,38 @@ class CSKPublicWS:
 
     async def subscribe(self, instruments: list[str]) -> None:
         """Set the instruments to subscribe to. Subscribes immediately if connected."""
-        self._instruments = set(instruments)
+        # Ensure all instruments are formatted as 'SYMBOL,INR'
+        formatted_instruments = set()
+        for instr in instruments:
+            if "," in instr:
+                formatted_instruments.add(instr.upper())
+            elif "/" in instr:
+                base, quote = instr.split("/")
+                formatted_instruments.add(
+                    f"{base.strip().upper()},{quote.strip().upper()}"
+                )
+            else:
+                # fallback, just add as is
+                formatted_instruments.add(instr.upper())
+        self._instruments = formatted_instruments
+        log.info(
+            "CSK WS subscribing to instrument pairs: %s", sorted(self._instruments)
+        )
         if self._sio.connected:
             await self._subscribe_all()
 
     async def connect(self) -> None:
         """Connect and keep alive. Run as a background task."""
-        # Origin header required — CSK WS returns 403 without it.
         headers = {"Origin": "https://coinswitch.co"}
         try:
             await self._sio.connect(
                 self.ws_url,
+                namespaces=[CSK_NAMESPACE],
                 transports=["websocket"],
+                socketio_path=CSK_SOCKETIO_PATH,
                 headers=headers,
             )
-            await self._sio.wait()    # blocks until disconnect
+            await self._sio.wait()  # blocks until disconnect
         except asyncio.CancelledError:
             await self._sio.disconnect()
         except Exception:
@@ -89,47 +91,52 @@ class CSKPublicWS:
     async def disconnect(self) -> None:
         await self._sio.disconnect()
 
-    # ── internals ─────────────────────────────────────────────────────────────
-
     async def _subscribe_all(self) -> None:
-        # USDT/INR is always subscribed regardless of the instrument list.
+        # USDT,INR is always subscribed regardless of the instrument list.
         for instrument in {_USDT_INR} | self._instruments:
-            await self._sio.emit("DEPTH_UPDATE", {"event": "subscribe", "pair": instrument})
+            log.debug("Subscribing to CSK pair: %s", instrument)
+            await self._sio.emit(
+                "FETCH_ORDER_BOOK_CS_PRO",
+                {"event": "subscribe", "pair": instrument},
+                namespace=CSK_NAMESPACE,
+            )
         log.info(
-            "CSK WS subscribed DEPTH_UPDATE for %d instruments",
+            "CSK WS subscribed FETCH_ORDER_BOOK_CS_PRO for %d instruments",
             len(self._instruments) + 1,
         )
 
     def _setup_handlers(self) -> None:
         sio = self._sio
 
-        @sio.on("connect")
-        async def _on_connect():
+        @sio.event(namespace=CSK_NAMESPACE)
+        async def connect():
             log.info("CSK public WS connected → subscribing")
             await self._subscribe_all()
 
-        @sio.on("disconnect")
-        async def _on_disconnect():
+        @sio.event(namespace=CSK_NAMESPACE)
+        async def disconnect():
             log.warning("CSK public WS disconnected (will reconnect)")
 
-        @sio.on("connect_error")
-        async def _on_error(data):
+        @sio.event(namespace=CSK_NAMESPACE)
+        async def connect_error(data):
             log.error("CSK public WS connect error: %s", data)
 
-        @sio.on("DEPTH_UPDATE")
-        async def _on_depth(data: dict):
+        @sio.on("FETCH_ORDER_BOOK_CS_PRO", namespace=CSK_NAMESPACE)
+        async def on_order_book(data: dict):
             if not isinstance(data, dict):
                 return
-            instrument = data.get("Instrument", "")
+            instrument = data.get("s", "")
             if not instrument:
                 return
             if instrument != _USDT_INR and instrument not in self._instruments:
                 return
 
             try:
-                bids = _parse_levels(data.get("Buy")  or [])
-                asks = _parse_levels(data.get("Sell") or [])
+                bids = _parse_levels(data.get("bids") or [])
+                asks = _parse_levels(data.get("asks") or [])
                 self.books[instrument] = Depth(bids=bids, asks=asks)
                 self._last_msg_ts = time()
             except Exception:
-                log.exception("CSK WS failed to parse DEPTH_UPDATE for %s", instrument)
+                log.exception(
+                    "CSK WS failed to parse FETCH_ORDER_BOOK_CS_PRO for %s", instrument
+                )
