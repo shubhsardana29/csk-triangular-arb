@@ -51,7 +51,11 @@ class ShadowExecutor:
         self.balances: dict[str, Decimal] = {k: Decimal(str(v)) for k, v in balances.items()}
         self.fee = Decimal(str(fee))
         self.tds  = Decimal(str(tds))
-        self._on_settle = on_settle   # ignored in shadow mode but kept for interface compat
+        self._on_settle = on_settle
+        self._fee_map: dict[str, Decimal] = {}
+
+    def update_fees(self, fee_map: dict[str, Decimal]) -> None:
+        self._fee_map = fee_map
 
     @property
     def active_order_ids(self) -> list[str]:
@@ -68,6 +72,8 @@ class ShadowExecutor:
         """Simulate fills for `path` against `tri_book`. Returns variance dict."""
         symbol  = tri_book.symbol
         qty     = path.executable_qty
+        fee     = self._fee_map.get(symbol, self.fee)
+        usdt_fee = self._fee_map.get("USDT", self.fee)
 
         pre_s   = self.balances.get(symbol, _ZERO)
         pre_inr = self.balances.get("INR",  _ZERO)
@@ -82,36 +88,36 @@ class ShadowExecutor:
 
         if path.path_id == 1:
             # S → INR (TDS) → USDT (buy) → S (USDT-sell TDS)
-            inr   = self._sell(tri_book.s_inr,   qty,  apply_tds=True)
-            usdt  = self._buy_by_notional(tri_book.usdt_inr, inr)
-            s_out = self._buy_by_notional(tri_book.s_usdt, usdt, tds_on_receive=True)
+            inr   = self._sell(tri_book.s_inr,   qty,  fee=fee,      apply_tds=True)
+            usdt  = self._buy_by_notional(tri_book.usdt_inr, inr,  fee=usdt_fee)
+            s_out = self._buy_by_notional(tri_book.s_usdt, usdt, fee=fee, tds_on_receive=True)
             if not all([inr, usdt, s_out]):
                 return _empty
             self.balances[symbol] = pre_s - qty + s_out
 
         elif path.path_id == 2:
             # S → USDT (TDS) → INR (TDS) → S (buy)
-            usdt  = self._sell(tri_book.s_usdt,   qty,  apply_tds=True)
-            inr   = self._sell(tri_book.usdt_inr, usdt, apply_tds=True)
-            s_out = self._buy_by_notional(tri_book.s_inr, inr)
+            usdt  = self._sell(tri_book.s_usdt,   qty,  fee=fee,      apply_tds=True)
+            inr   = self._sell(tri_book.usdt_inr, usdt, fee=usdt_fee, apply_tds=True)
+            s_out = self._buy_by_notional(tri_book.s_inr, inr, fee=fee)
             if not all([usdt, inr, s_out]):
                 return _empty
             self.balances[symbol] = pre_s - qty + s_out
 
         elif path.path_id == 3:
             # INR → S (buy) → USDT (TDS) → INR (TDS)
-            s_got = self._buy_by_notional(tri_book.s_inr, qty)
-            usdt  = self._sell(tri_book.s_usdt,   s_got, apply_tds=True)
-            inr   = self._sell(tri_book.usdt_inr, usdt,  apply_tds=True)
+            s_got = self._buy_by_notional(tri_book.s_inr, qty,   fee=fee)
+            usdt  = self._sell(tri_book.s_usdt,   s_got, fee=fee,      apply_tds=True)
+            inr   = self._sell(tri_book.usdt_inr, usdt,  fee=usdt_fee, apply_tds=True)
             if not all([s_got, usdt, inr]):
                 return _empty
             self.balances["INR"] = pre_inr - qty + inr
 
         elif path.path_id == 4:
             # INR → USDT (buy) → S (USDT-sell TDS) → INR (TDS)
-            usdt  = self._buy_by_notional(tri_book.usdt_inr, qty)
-            s_got = self._buy_by_notional(tri_book.s_usdt, usdt, tds_on_receive=True)
-            inr   = self._sell(tri_book.s_inr, s_got, apply_tds=True)
+            usdt  = self._buy_by_notional(tri_book.usdt_inr, qty,  fee=usdt_fee)
+            s_got = self._buy_by_notional(tri_book.s_usdt, usdt, fee=fee, tds_on_receive=True)
+            inr   = self._sell(tri_book.s_inr, s_got, fee=fee, apply_tds=True)
             if not all([usdt, s_got, inr]):
                 return _empty
             self.balances["INR"] = pre_inr - qty + inr
@@ -138,19 +144,23 @@ class ShadowExecutor:
 
     # ── private: leg helpers ──────────────────────────────────────────────────
 
-    def _sell(self, depth: Depth, amount: Decimal, apply_tds: bool = True) -> Decimal:
+    def _sell(self, depth: Depth, amount: Decimal, apply_tds: bool = True,
+              fee: Optional[Decimal] = None) -> Decimal:
         """Sell `amount` base into book. Returns quote received net of fee (+ TDS if flagged)."""
         vwap = _vwap_bids(depth, amount)
         if vwap == _ZERO:
             return _ZERO
-        proceeds = amount * vwap * (_ONE - self.fee)
+        f = fee if fee is not None else self.fee
+        proceeds = amount * vwap * (_ONE - f)
         return proceeds * (_ONE - self.tds) if apply_tds else proceeds
 
     def _buy_by_notional(
         self, depth: Depth, notional: Decimal, tds_on_receive: bool = False,
+        fee: Optional[Decimal] = None,
     ) -> Decimal:
         """Spend `notional` quote buying base. Returns qty received net of fee (+ TDS if flagged)."""
-        net_notional = notional * (_ONE - self.fee)
+        f = fee if fee is not None else self.fee
+        net_notional = notional * (_ONE - f)
         if tds_on_receive:
             net_notional = net_notional * (_ONE - self.tds)
         ask = depth.ask
@@ -184,6 +194,10 @@ class ShadowTwoLegExecutor:
         self.fee = Decimal(str(fee))
         self.tds = Decimal(str(tds))
         self._on_settle = on_settle
+        self._fee_map: dict[str, Decimal] = {}
+
+    def update_fees(self, fee_map: dict[str, Decimal]) -> None:
+        self._fee_map = fee_map
 
     @property
     def active_order_ids(self) -> list[str]:
@@ -214,19 +228,21 @@ class ShadowTwoLegExecutor:
         if usdt_inr_mid == _ZERO or qty <= _ZERO:
             return _empty
 
+        fee = self._fee_map.get(symbol, self.fee)
+
         if result.direction == "INR_CHEAP":
             # Leg 1: BUY S on INR book — spend INR, receive tokens net of fee.
             _, ask_vwap_inr, _ = book.s_inr.walk_asks_to_qty(qty)
             if ask_vwap_inr == _ZERO:
                 return _empty
             inr_cost         = qty * ask_vwap_inr
-            tokens_received  = qty * (_ONE - self.fee)
+            tokens_received  = qty * (_ONE - fee)
 
             # Leg 2: SELL S on USDT C2C — receive USDT net of fee + TDS.
             _, bid_vwap_usdt, _ = book.s_usdt.walk_bids_to_qty(tokens_received)
             if bid_vwap_usdt == _ZERO:
                 return _empty
-            usdt_received = tokens_received * bid_vwap_usdt * (_ONE - self.fee) * (_ONE - self.tds)
+            usdt_received = tokens_received * bid_vwap_usdt * (_ONE - fee) * (_ONE - self.tds)
 
             # C2C converts USDT → INR at mid rate (no additional fee modeled here).
             inr_received = usdt_received * usdt_inr_mid
@@ -238,13 +254,13 @@ class ShadowTwoLegExecutor:
             if ask_vwap_usdt == _ZERO:
                 return _empty
             usdt_cost       = qty * ask_vwap_usdt
-            tokens_received = qty * (_ONE - self.fee)
+            tokens_received = qty * (_ONE - fee)
 
             # Leg 2: SELL S on INR book — receive INR net of fee + TDS.
             _, bid_vwap_inr, _ = book.s_inr.walk_bids_to_qty(tokens_received)
             if bid_vwap_inr == _ZERO:
                 return _empty
-            inr_received = tokens_received * bid_vwap_inr * (_ONE - self.fee) * (_ONE - self.tds)
+            inr_received = tokens_received * bid_vwap_inr * (_ONE - fee) * (_ONE - self.tds)
 
             self.balances["USDT"] = pre_usd - usdt_cost
             self.balances["INR"]  = pre_inr + inr_received

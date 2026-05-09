@@ -85,6 +85,13 @@ class TriRanker:
         self.fee            = taker_fee      if taker_fee      is not None else config.TAKER_FEE
         self.tds            = tds_rate       if tds_rate       is not None else config.TDS_RATE
         self.min_profit_pct = min_profit_pct if min_profit_pct is not None else config.ARBITRAGE_MIN_PROFIT_THRESHOLD
+        self._fee_map: dict[str, Decimal] = {}   # per-symbol taker_fee_after_discount
+
+    def update_fees(self, fee_map: dict[str, Decimal]) -> None:
+        """Update per-symbol actual fees fetched from the exchange at boot."""
+        self._fee_map = fee_map
+        sample = next(iter(fee_map.values()), None)
+        log.info("[ranker] fee map loaded: %d symbols  sample_fee=%s", len(fee_map), sample)
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -122,8 +129,10 @@ class TriRanker:
             )
         target_inr = config.MAX_EXPOSURES.get("INR", config.DEFAULT_INR_EXPOSURE)
 
-        net_ratios   = self._path_yields(tri_book, target_s, target_inr, self.fee, self.tds)
-        gross_ratios = self._path_yields(tri_book, target_s, target_inr, _ZERO,    _ZERO)
+        sym_fee  = self._fee_map.get(symbol, self.fee)
+        usdt_fee = self._fee_map.get("USDT", self.fee)
+        net_ratios   = self._path_yields(tri_book, target_s, target_inr, sym_fee, usdt_fee, self.tds)
+        gross_ratios = self._path_yields(tri_book, target_s, target_inr, _ZERO,   _ZERO,    _ZERO)
         meta         = _path_definitions(symbol)
 
         net   = self._best_path(net_ratios,   meta, symbol, tri_book, balances, target_s, target_inr, with_costs=True)
@@ -137,54 +146,57 @@ class TriRanker:
         tri: TriBook,
         target_s: Decimal,
         target_inr: Decimal,
-        fee: Decimal,
+        sym_fee: Decimal,
+        usdt_fee: Decimal,
         tds: Decimal,
     ) -> list[Decimal]:
         """Compute output/input yield ratio for all 4 paths.
 
-        Returns a list of 4 Decimal values; 0 means the path is not
-        executable (insufficient depth or zero price on some leg).
+        sym_fee:  taker fee for the symbol's INR and USDT legs.
+        usdt_fee: taker fee for the USDT/INR leg.
+        Returns a list of 4 Decimal values; 0 means not executable.
         """
         s_inr    = tri.s_inr
         s_usdt   = tri.s_usdt
         usdt_inr = tri.usdt_inr
-        net = _ONE - fee
+        ns = _ONE - sym_fee   # net multiplier for symbol legs
+        nu = _ONE - usdt_fee  # net multiplier for USDT/INR leg
 
         # Path 1: SELL S/INR (TDS) → BUY USDT/INR → BUY S/USDT (USDT-sell TDS)
         v1 = _vwap_bids(s_inr, target_s)
         if v1 == _ZERO:
             p1 = _ZERO
         else:
-            inr1 = target_s * v1 * net * (_ONE - tds)
+            inr1 = target_s * v1 * ns * (_ONE - tds)
             v2   = _vwap_asks(usdt_inr, inr1)
             if v2 == _ZERO:
                 p1 = _ZERO
             else:
-                usdt2 = (inr1 / v2) * net
+                usdt2 = (inr1 / v2) * nu
                 ask3  = s_usdt.ask
                 if ask3 == _ZERO:
                     p1 = _ZERO
                 else:
                     v3 = _vwap_asks(s_usdt, usdt2 / ask3)
-                    p1 = (usdt2 * net * (_ONE - tds) / v3 / target_s) if v3 else _ZERO
+                    p1 = (usdt2 * ns * (_ONE - tds) / v3 / target_s) if v3 else _ZERO
 
         # Path 2: SELL S/USDT (TDS) → SELL USDT/INR (TDS) → BUY S/INR
         v1 = _vwap_bids(s_usdt, target_s)
         if v1 == _ZERO:
             p2 = _ZERO
         else:
-            usdt1 = target_s * v1 * net * (_ONE - tds)
+            usdt1 = target_s * v1 * ns * (_ONE - tds)
             v2    = _vwap_bids(usdt_inr, usdt1)
             if v2 == _ZERO:
                 p2 = _ZERO
             else:
-                inr2 = usdt1 * v2 * net * (_ONE - tds)
+                inr2 = usdt1 * v2 * nu * (_ONE - tds)
                 ask3 = s_inr.ask
                 if ask3 == _ZERO:
                     p2 = _ZERO
                 else:
                     v3 = _vwap_asks(s_inr, inr2 / ask3)
-                    p2 = (inr2 * net / v3 / target_s) if v3 else _ZERO
+                    p2 = (inr2 * ns / v3 / target_s) if v3 else _ZERO
 
         # Path 3: BUY S/INR → SELL S/USDT (TDS) → SELL USDT/INR (TDS)
         ask1 = s_inr.ask
@@ -195,21 +207,21 @@ class TriRanker:
             if v1 == _ZERO:
                 p3 = _ZERO
             else:
-                s1 = target_inr * net / v1
+                s1 = target_inr * ns / v1
                 v2 = _vwap_bids(s_usdt, s1)
                 if v2 == _ZERO:
                     p3 = _ZERO
                 else:
-                    usdt2 = s1 * v2 * net * (_ONE - tds)
+                    usdt2 = s1 * v2 * ns * (_ONE - tds)
                     v3    = _vwap_bids(usdt_inr, usdt2)
-                    p3 = (usdt2 * v3 * net * (_ONE - tds) / target_inr) if v3 else _ZERO
+                    p3 = (usdt2 * v3 * nu * (_ONE - tds) / target_inr) if v3 else _ZERO
 
         # Path 4: BUY USDT/INR → BUY S/USDT (USDT-sell TDS) → SELL S/INR (TDS)
         v1 = _vwap_asks(usdt_inr, target_inr)
         if v1 == _ZERO:
             p4 = _ZERO
         else:
-            usdt1 = target_inr / v1 * net
+            usdt1 = target_inr / v1 * nu
             ask2  = s_usdt.ask
             if ask2 == _ZERO:
                 p4 = _ZERO
@@ -218,9 +230,9 @@ class TriRanker:
                 if v2 == _ZERO:
                     p4 = _ZERO
                 else:
-                    s2 = usdt1 * net * (_ONE - tds) / v2
+                    s2 = usdt1 * ns * (_ONE - tds) / v2
                     v3 = _vwap_bids(s_inr, s2)
-                    p4 = (s2 * v3 * net * (_ONE - tds) / target_inr) if v3 else _ZERO
+                    p4 = (s2 * v3 * ns * (_ONE - tds) / target_inr) if v3 else _ZERO
 
         return [p1, p2, p3, p4]
 

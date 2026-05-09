@@ -185,7 +185,9 @@ async def main() -> None:
             "Starting TriEngine — %s mode — %s execution — %d symbols  3leg=%s  2leg=%s  rebalancer=%s",
             "REST fallback" if use_rest else "WebSocket",
             execution_mode, len(symbols),
-            config.THREE_LEG_ENABLED, config.TWO_LEG_ENABLED, config.REBALANCER_ENABLED,
+            config.THREE_LEG_ENABLED,
+            config.TWO_LEG_ENABLED,
+            "enabled" if rebalancer is not None else "disabled (shadow mode)",
         )
         async with notifier:
             await engine.run()

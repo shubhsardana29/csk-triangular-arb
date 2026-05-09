@@ -181,7 +181,7 @@ def build_initial_shadow_balances(
 def log_config() -> None:
     """Log the active config. Call once at startup from main.py, not on import."""
     log.info("--- Config Loaded ---")
-    log.info("Taker Fee: %s%%", TAKER_FEE * 100)
+    log.info("Taker Fee: %s%% (config default — actual fetched from API at boot)", TAKER_FEE * 100)
     log.info("TDS Rate:  %s%%", TDS_RATE * 100)
     log.info("Symbol discovery: whitelist=%s  blacklist=%d symbols",
              SYMBOLS_WHITELIST or "all", len(SYMBOLS_BLACKLIST))

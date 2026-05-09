@@ -449,6 +449,32 @@ class CoinSwitchClient:
             return raw.get("orders", raw.get("data", []))
         return []
 
+    async def get_trading_fees(self, exchange: str = "coinswitchx") -> "dict[str, Decimal]":
+        """Fetch per-symbol taker fees after discount from CSK.
+
+        Returns {symbol_upper: taker_fee_after_discount} e.g. {"DOGE": Decimal("0"), ...}.
+        Falls back to empty dict on error so callers use config.TAKER_FEE as default.
+        """
+        from decimal import Decimal as _D
+        raw = await self._get("/trade/api/v2/tradingFee", {"exchange": exchange})
+        exchange_data = raw.get(exchange, raw.get(exchange.upper(), {}))
+        if not isinstance(exchange_data, dict):
+            logger.warning("get_trading_fees: unexpected response shape: %s", raw)
+            return {}
+        fee_map: dict[str, _D] = {}
+        for symbol, info in exchange_data.items():
+            if not isinstance(info, dict):
+                continue
+            raw_fee = info.get("taker_fee_after_discount", info.get("taker_fee", None))
+            if raw_fee is not None:
+                fee_map[symbol.upper()] = _D(str(raw_fee))
+        logger.info(
+            "get_trading_fees: %d symbols — sample fee: %s",
+            len(fee_map),
+            next(iter(fee_map.values()), "n/a") if fee_map else "n/a",
+        )
+        return fee_map
+
     async def get_recent_orders(self, lookback_minutes: int = 120) -> list[dict]:
         """Return filled orders from the last `lookback_minutes` minutes.
 

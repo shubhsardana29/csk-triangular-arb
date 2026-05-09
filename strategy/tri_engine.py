@@ -113,6 +113,22 @@ class TriEngine:
 
         tri_books = await self._client.fetch_triangular_books(self._symbols, prefilter=True)
 
+        # Fetch actual per-symbol trading fees and propagate to all components.
+        try:
+            fee_map = await self._client.get_trading_fees(exchange="coinswitchx")
+            if fee_map:
+                self._ranker.update_fees(fee_map)
+                if self._two_leg_ranker is not None:
+                    self._two_leg_ranker.update_fees(fee_map)
+                if hasattr(self._executor, "update_fees"):
+                    self._executor.update_fees(fee_map)
+                if self._two_leg_executor is not None and hasattr(self._two_leg_executor, "update_fees"):
+                    self._two_leg_executor.update_fees(fee_map)
+                sample = next(iter(fee_map.values()))
+                log.info("[engine] actual taker fee loaded: %s (sample)", sample)
+        except Exception:
+            log.warning("[engine] could not fetch trading fees — using config default %s", config.TAKER_FEE)
+
         # ShadowExecutor: build a simulated portfolio from config.
         # TriExecutor: start() fetches real balances from the exchange.
         if not self._executor.balances:

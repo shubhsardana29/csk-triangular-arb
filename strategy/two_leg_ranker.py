@@ -37,6 +37,10 @@ class TwoLegRanker:
         self.fee        = taker_fee      if taker_fee      is not None else config.TAKER_FEE
         self.tds        = tds_rate       if tds_rate       is not None else config.TDS_RATE
         self.min_spread = min_spread_pct if min_spread_pct is not None else config.TWO_LEG_MIN_SPREAD_PCT
+        self._fee_map: dict[str, Decimal] = {}
+
+    def update_fees(self, fee_map: dict[str, Decimal]) -> None:
+        self._fee_map = fee_map
 
     def rank_all(
         self,
@@ -80,11 +84,12 @@ class TwoLegRanker:
         # Walk INR bids (proceeds from SELL on INR).
         bid_qty, bid_vwap, bid_worst = book.s_inr.walk_bids_to_qty(target_qty)
 
+        sym_fee = self._fee_map.get(symbol, self.fee)
+
         # ── INR_CHEAP: buy on INR (cheap), sell on USDT C2C (expensive) ──────
-        # Net yield after fees: sell USDT at fair * (1-fee)*(1-tds) / (buy INR at ask_vwap * (1+fee))
-        # Simplified: yield ≈ fair / ask_vwap * (1-fee)^2 * (1-tds)
+        # yield ≈ fair / ask_vwap * (1-fee_buy) * (1-fee_sell) * (1-tds)
         if ask_qty > _ZERO and ask_vwap > _ZERO:
-            net_yield_cheap = (fair_inr / ask_vwap) * (_ONE - self.fee) ** 2 * (_ONE - self.tds)
+            net_yield_cheap = (fair_inr / ask_vwap) * (_ONE - sym_fee) ** 2 * (_ONE - self.tds)
             spread_cheap    = (fair_inr - ask_vwap) / fair_inr
             profit_cheap    = net_yield_cheap - _ONE
         else:
@@ -93,9 +98,9 @@ class TwoLegRanker:
             profit_cheap    = _ZERO
 
         # ── INR_EXPENSIVE: buy on USDT C2C (cheap), sell on INR (expensive) ──
-        # yield ≈ bid_vwap / fair * (1-fee)^2 * (1-tds)
+        # yield ≈ bid_vwap / fair * (1-fee_buy) * (1-fee_sell) * (1-tds)
         if bid_qty > _ZERO and bid_vwap > _ZERO:
-            net_yield_exp = (bid_vwap / fair_inr) * (_ONE - self.fee) ** 2 * (_ONE - self.tds)
+            net_yield_exp = (bid_vwap / fair_inr) * (_ONE - sym_fee) ** 2 * (_ONE - self.tds)
             spread_exp    = (bid_vwap - fair_inr) / fair_inr
             profit_exp    = net_yield_exp - _ONE
         else:
