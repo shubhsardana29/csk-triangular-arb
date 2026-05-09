@@ -24,7 +24,7 @@ from feeds.csk_public_ws import CSKPublicWS
 from slack_notifier import SlackNotifier
 from strategy.tri_ranker import TriRanker
 from strategy.two_leg_ranker import TwoLegRanker
-from strategy.shadow_executor import ShadowExecutor
+from strategy.shadow_executor import ShadowExecutor, ShadowTwoLegExecutor
 from strategy.tri_engine import TriEngine
 from strategy.tri_rebalancer import TriRebalancer
 
@@ -78,15 +78,19 @@ def _build_executor(execution_mode: str, client: CoinSwitchClient, on_settle=Non
                           on_settle=on_settle)
 
 
-def _build_two_leg_executor(execution_mode: str, client: CoinSwitchClient, on_settle=None):
+def _build_two_leg_executor(execution_mode: str, client: CoinSwitchClient, on_settle=None,
+                            shadow_balances: dict | None = None):
     """Build the appropriate 2-leg executor."""
     if execution_mode == "real":
         from strategy.two_leg_executor import TwoLegExecutor
         return TwoLegExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
                               on_settle=on_settle)
-    # Shadow mode: reuse ShadowExecutor — it won't place real 2-leg orders,
-    # but returning None disables 2-leg entirely in shadow mode for simplicity.
-    return None
+    return ShadowTwoLegExecutor(
+        balances=shadow_balances or {},
+        fee=config.TAKER_FEE,
+        tds=config.TDS_RATE,
+        on_settle=on_settle,
+    )
 
 
 async def main() -> None:
@@ -115,7 +119,10 @@ async def main() -> None:
 
     # symbols not yet known — executor created before discovery; symbols wired after.
     executor         = _build_executor(execution_mode, client, on_settle=on_settle)
-    two_leg_executor = _build_two_leg_executor(execution_mode, client, on_settle=on_settle)
+    two_leg_executor = _build_two_leg_executor(
+        execution_mode, client, on_settle=on_settle,
+        shadow_balances=executor.balances if execution_mode != "real" else None,
+    )
 
     async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
         log.info(

@@ -16,7 +16,7 @@ from collections.abc import Callable
 from decimal import Decimal
 from typing import Optional
 
-from core.models import Depth, PathResult, TriBook
+from core.models import Depth, PathResult, TriBook, TwoLegResult
 
 log = logging.getLogger(__name__)
 
@@ -160,3 +160,108 @@ class ShadowExecutor:
         if vwap == _ZERO:
             return _ZERO
         return net_notional / vwap
+
+
+class ShadowTwoLegExecutor:
+    """Paper-trades 2-leg spread opportunities against the shared balance dict.
+
+    Shares the same `balances` reference as ShadowExecutor so both strategies
+    deplete the same paper portfolio. Simulates fills synchronously against
+    the live book snapshot and releases the position lock immediately.
+
+    INR_CHEAP:     BUY S/INR → SELL S/USDT (C2C converts USDT → INR implicitly)
+    INR_EXPENSIVE: BUY S/USDT (C2C) → SELL S/INR
+    """
+
+    def __init__(
+        self,
+        balances: dict[str, Decimal],
+        fee: Decimal,
+        tds: Decimal,
+        on_settle=None,
+    ):
+        self.balances = balances   # shared reference — same dict as ShadowExecutor
+        self.fee = Decimal(str(fee))
+        self.tds = Decimal(str(tds))
+        self._on_settle = on_settle
+
+    @property
+    def active_order_ids(self) -> list[str]:
+        return []
+
+    async def start(self) -> None:
+        pass
+
+    async def reprice_tick(self, tri_books: dict) -> None:
+        pass   # no repricing needed in shadow mode
+
+    async def execute(self, result: TwoLegResult, book: TriBook) -> dict:
+        symbol = result.symbol
+        qty    = result.executable_qty
+
+        pre_s   = self.balances.get(symbol, _ZERO)
+        pre_inr = self.balances.get("INR",  _ZERO)
+        pre_usd = self.balances.get("USDT", _ZERO)
+
+        _empty = {
+            "result_balances": self.balances.copy(),
+            "symbol_variance": _ZERO,
+            "inr_variance":    _ZERO,
+            "usdt_variance":   _ZERO,
+        }
+
+        usdt_inr_mid = book.usdt_inr.mid
+        if usdt_inr_mid == _ZERO or qty <= _ZERO:
+            return _empty
+
+        if result.direction == "INR_CHEAP":
+            # Leg 1: BUY S on INR book — spend INR, receive tokens net of fee.
+            _, ask_vwap_inr, _ = book.s_inr.walk_asks_to_qty(qty)
+            if ask_vwap_inr == _ZERO:
+                return _empty
+            inr_cost         = qty * ask_vwap_inr
+            tokens_received  = qty * (_ONE - self.fee)
+
+            # Leg 2: SELL S on USDT C2C — receive USDT net of fee + TDS.
+            _, bid_vwap_usdt, _ = book.s_usdt.walk_bids_to_qty(tokens_received)
+            if bid_vwap_usdt == _ZERO:
+                return _empty
+            usdt_received = tokens_received * bid_vwap_usdt * (_ONE - self.fee) * (_ONE - self.tds)
+
+            # C2C converts USDT → INR at mid rate (no additional fee modeled here).
+            inr_received = usdt_received * usdt_inr_mid
+            self.balances["INR"] = pre_inr - inr_cost + inr_received
+
+        elif result.direction == "INR_EXPENSIVE":
+            # Leg 1: BUY S on USDT C2C — spend USDT, receive tokens net of fee.
+            _, ask_vwap_usdt, _ = book.s_usdt.walk_asks_to_qty(qty)
+            if ask_vwap_usdt == _ZERO:
+                return _empty
+            usdt_cost       = qty * ask_vwap_usdt
+            tokens_received = qty * (_ONE - self.fee)
+
+            # Leg 2: SELL S on INR book — receive INR net of fee + TDS.
+            _, bid_vwap_inr, _ = book.s_inr.walk_bids_to_qty(tokens_received)
+            if bid_vwap_inr == _ZERO:
+                return _empty
+            inr_received = tokens_received * bid_vwap_inr * (_ONE - self.fee) * (_ONE - self.tds)
+
+            self.balances["USDT"] = pre_usd - usdt_cost
+            self.balances["INR"]  = pre_inr + inr_received
+
+        else:
+            log.warning("[shadow_2leg] unknown direction=%s for %s", result.direction, symbol)
+            return _empty
+
+        if self._on_settle is not None:
+            try:
+                self._on_settle(symbol)
+            except Exception:
+                log.exception("[shadow_2leg] on_settle raised for %s", symbol)
+
+        return {
+            "result_balances": self.balances.copy(),
+            "symbol_variance": self.balances.get(symbol, _ZERO) - pre_s,
+            "inr_variance":    self.balances.get("INR",  _ZERO) - pre_inr,
+            "usdt_variance":   self.balances.get("USDT", _ZERO) - pre_usd,
+        }

@@ -14,7 +14,7 @@ from feeds.binance_depth_ws import BinanceDepthFeed
 from feeds.csk_public_ws import CSKPublicWS
 from strategy.tri_ranker import TriRanker
 from strategy.two_leg_ranker import TwoLegRanker
-from strategy.shadow_executor import ShadowExecutor
+from strategy.shadow_executor import ShadowExecutor, ShadowTwoLegExecutor
 from strategy.tri_engine import TriEngine
 from strategy.tri_rebalancer import TriRebalancer
 from dotenv import load_dotenv
@@ -288,7 +288,12 @@ async def market_loop(app):
     else:
         executor         = ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE,
                                           on_settle=on_settle)
-        two_leg_executor = None
+        two_leg_executor = ShadowTwoLegExecutor(
+            balances=executor.balances,
+            fee=config.TAKER_FEE,
+            tds=config.TDS_RATE,
+            on_settle=on_settle,
+        ) if config.TWO_LEG_ENABLED else None
 
     async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
         app_state.record_execution(symbol, net, gross, result)
