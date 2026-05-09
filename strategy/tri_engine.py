@@ -358,6 +358,17 @@ class TriEngine:
                 self._cycle, latency_ms, len(ranked),
                 placeable_3, placeable_2, len(self._active_symbols),
             )
+            # Show top-5 2-leg spreads so the user can see how close the market is.
+            if ranked_2l:
+                top5 = sorted(ranked_2l.values(), key=lambda r: r.profit_pct, reverse=True)[:5]
+                for r in top5:
+                    log.info(
+                        "[2leg-best] %-10s  %s  spread=%+.3f%%  profit=%+.3f%%  threshold=%.3f%%",
+                        r.symbol, r.direction,
+                        float(r.spread_pct) * 100,
+                        float(r.profit_pct) * 100,
+                        float(config.TWO_LEG_MIN_SPREAD_PCT) * 100,
+                    )
 
         self._cycle += 1
 
