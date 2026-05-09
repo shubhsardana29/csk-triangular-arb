@@ -263,14 +263,18 @@ class CoinSwitchClient:
         self,
         whitelist: list[str] | None = None,
         blacklist: list[str] | None = None,
+        max_symbols: int = 50,
     ) -> list[str]:
         """Discover all symbols eligible for triangular arbitrage.
 
         Eligible = has an active S/INR pair on coinswitchx AND an active
         S/USDT pair on binance (C2C). Returns sorted list of base symbols.
 
-        whitelist: if non-empty, only these symbols are returned (after eligibility check).
-        blacklist: these symbols are always excluded.
+        whitelist:   if non-empty, only these symbols are considered.
+        blacklist:   these symbols are always excluded.
+        max_symbols: hard cap on the result size. Without a whitelist the raw
+                     intersection can exceed 300 symbols, which overwhelms the
+                     WebSocket feeds. Capped at 50 by default.
         """
         whitelist = [s.upper() for s in (whitelist or [])]
         blacklist = {s.upper() for s in (blacklist or [])}
@@ -302,10 +306,21 @@ class CoinSwitchClient:
         eligible -= blacklist
 
         result = sorted(eligible)
+
+        if len(result) > max_symbols:
+            if not whitelist:
+                logger.warning(
+                    "discover_symbols: %d eligible symbols found but no SYMBOLS_WHITELIST set. "
+                    "Capping at %d to protect WS feeds. "
+                    "Set SYMBOLS_WHITELIST in .env to choose which symbols to trade.",
+                    len(result), max_symbols,
+                )
+            result = result[:max_symbols]
+
         logger.info(
-            "discover_symbols: %d eligible (inr=%d usdt=%d whitelist=%s blacklist=%d excluded)",
+            "discover_symbols: %d symbols (inr=%d usdt=%d whitelist=%s blacklist=%d)",
             len(result), len(inr_bases), len(usdt_bases),
-            whitelist or "all", len(blacklist),
+            whitelist or "capped", len(blacklist),
         )
         return result
 

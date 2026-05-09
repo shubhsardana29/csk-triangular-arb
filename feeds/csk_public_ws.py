@@ -72,8 +72,14 @@ class CSKPublicWS:
 
     async def connect(self) -> None:
         """Connect and keep alive. Run as a background task."""
+        # Origin header required — CSK WS returns 403 without it.
+        headers = {"Origin": "https://coinswitch.co"}
         try:
-            await self._sio.connect(self.ws_url, transports=["websocket"])
+            await self._sio.connect(
+                self.ws_url,
+                transports=["websocket"],
+                headers=headers,
+            )
             await self._sio.wait()    # blocks until disconnect
         except asyncio.CancelledError:
             await self._sio.disconnect()

@@ -281,6 +281,7 @@ async def market_loop(app):
             symbols = await client.discover_symbols(
                 whitelist=config.SYMBOLS_WHITELIST,
                 blacklist=config.SYMBOLS_BLACKLIST,
+                max_symbols=config.MAX_SYMBOLS,
             )
             if not symbols:
                 logger.error("Symbol discovery returned 0 symbols — aborting")
