@@ -25,6 +25,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from time import time
+from typing import Optional
 
 import config
 from core.models import Depth, PathResult, TriBook
@@ -39,6 +40,7 @@ log = logging.getLogger(__name__)
 TICK_INTERVAL_S      = 0.10   # 10 Hz
 STALENESS_THRESHOLD_S = 15.0
 WATCHDOG_INTERVAL_S  = 5.0
+WS_STARTUP_GRACE_S   = 2.0
 
 OpportunityCallback = Callable[
     [str, PathResult, PathResult, dict], Awaitable[None]
@@ -62,9 +64,9 @@ class TriEngine:
         symbols: list[str],
         binance_feed=None,   # BinanceDepthFeed | None  (injected from main.py)
         csk_ws=None,         # CSKPublicWS | None       (injected from main.py)
-        polling_interval: float | None = None,
-        on_opportunity: OpportunityCallback | None = None,
-        on_tick: TickCallback | None = None,
+        polling_interval: Optional[float] = None,
+        on_opportunity: Optional[OpportunityCallback] = None,
+        on_tick: Optional[TickCallback] = None,
     ):
         self._client           = client
         self._ranker           = ranker
@@ -133,6 +135,18 @@ class TriEngine:
         csk_task      = asyncio.create_task(self._csk_ws.connect(),      name="csk-public-ws")
         tick_task     = asyncio.create_task(self._tick_loop(),            name="tri-tick-loop")
         watchdog_task = asyncio.create_task(self._staleness_watchdog(),   name="tri-watchdog")
+
+        # If CSK WS fails during startup (e.g., 403 handshake), don't stall in WS mode.
+        await asyncio.sleep(WS_STARTUP_GRACE_S)
+        if csk_task.done():
+            log.warning(
+                "[engine] CSK WS ended during startup; switching to REST fallback mode"
+            )
+            for t in (binance_task, tick_task, watchdog_task):
+                t.cancel()
+            await asyncio.gather(binance_task, tick_task, watchdog_task, return_exceptions=True)
+            await self._run_rest_mode()
+            return
 
         try:
             await asyncio.gather(binance_task, csk_task, tick_task, watchdog_task)

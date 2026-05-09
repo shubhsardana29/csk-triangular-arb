@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Optional
 
 import aiohttp
 
@@ -13,7 +14,7 @@ class SlackNotifier:
         enabled: bool = True,
         cooldown_seconds: int = 60,
         username: str = "OmniArb",
-        session: aiohttp.ClientSession | None = None,
+        session: Optional[aiohttp.ClientSession] = None,
     ):
         self.webhook_url = webhook_url.strip()
         self.enabled = enabled and bool(self.webhook_url)
@@ -45,7 +46,7 @@ class SlackNotifier:
         self._last_sent[key] = now
         return True
 
-    async def send(self, text: str, key: str | None = None) -> bool:
+    async def send(self, text: str, key: Optional[str] = None) -> bool:
         if not self.enabled:
             return False
 

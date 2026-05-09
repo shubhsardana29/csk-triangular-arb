@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from decimal import Decimal
+from typing import Optional
 
 import config
 from core.models import Depth, PathResult, TriBook
@@ -77,9 +78,9 @@ class TriRanker:
 
     def __init__(
         self,
-        taker_fee: Decimal | None = None,
-        tds_rate: Decimal | None = None,
-        min_profit_pct: Decimal | None = None,
+        taker_fee: Optional[Decimal] = None,
+        tds_rate: Optional[Decimal] = None,
+        min_profit_pct: Optional[Decimal] = None,
     ):
         self.fee            = taker_fee      if taker_fee      is not None else config.TAKER_FEE
         self.tds            = tds_rate       if tds_rate       is not None else config.TDS_RATE

@@ -3,7 +3,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -78,7 +78,7 @@ def _collect_pair_metrics(payload: Any) -> dict[str, dict[str, float]]:
     return metrics
 
 
-def _extract_symbol(entry: dict) -> str | None:
+def _extract_symbol(entry: dict) -> Optional[str]:
     for key in ("symbol", "market", "pair", "s"):
         value = entry.get(key)
         if isinstance(value, str) and "/" in value:
@@ -92,7 +92,7 @@ def _extract_symbol(entry: dict) -> str | None:
     return None
 
 
-def _extract_coin(entry: dict) -> str | None:
+def _extract_coin(entry: dict) -> Optional[str]:
     for key in ("symbol", "coin", "currency", "base", "name"):
         value = entry.get(key)
         if isinstance(value, str) and value.strip():

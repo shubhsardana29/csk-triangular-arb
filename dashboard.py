@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from decimal import Decimal
+from typing import Optional
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp_sse import sse_response
@@ -38,7 +39,7 @@ def _format_pct(value) -> str:
     return f"{float(value) * 100:+.4f}%"
 
 
-def _best_mark_price(depth: Depth | None) -> float:
+def _best_mark_price(depth: Optional[Depth]) -> float:
     """Mid-price from a Depth snapshot. Returns float for dashboard rendering."""
     if depth is None:
         return 0.0

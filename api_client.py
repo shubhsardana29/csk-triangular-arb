@@ -1,5 +1,6 @@
 import time
 import urllib.parse
+from typing import Optional
 from urllib.parse import urlparse, urlencode
 from cryptography.hazmat.primitives.asymmetric import ed25519
 import aiohttp
@@ -33,7 +34,7 @@ def _flatten_records(payload) -> list[dict]:
     return []
 
 
-def _extract_symbol(entry: dict) -> str | None:
+def _extract_symbol(entry: dict) -> Optional[str]:
     for key in ("symbol", "market", "pair", "s"):
         value = entry.get(key)
         if isinstance(value, str) and "/" in value:
@@ -142,9 +143,9 @@ class CoinSwitchClient:
     async def _get(
         self,
         endpoint: str,
-        params: dict | None = None,
+        params: Optional[dict] = None,
         timeout: float = 5,
-        suppress_statuses: set[int] | None = None,
+        suppress_statuses: Optional[set[int]] = None,
     ) -> dict:
         params = params or {}
         suppress_statuses = suppress_statuses or set()
@@ -261,8 +262,8 @@ class CoinSwitchClient:
 
     async def discover_symbols(
         self,
-        whitelist: list[str] | None = None,
-        blacklist: list[str] | None = None,
+        whitelist: Optional[list[str]] = None,
+        blacklist: Optional[list[str]] = None,
         max_symbols: int = 50,
     ) -> list[str]:
         """Discover all symbols eligible for triangular arbitrage.
@@ -353,7 +354,7 @@ class CoinSwitchClient:
             return {}
 
     async def _delete(
-        self, endpoint: str, params: dict | None = None, timeout: float = 5.0
+        self, endpoint: str, params: Optional[dict] = None, timeout: float = 5.0
     ) -> dict:
         params = params or {}
         url = self.base_url + endpoint
@@ -382,7 +383,7 @@ class CoinSwitchClient:
 
     async def place_spot_order(
         self, symbol: str, side: str, price: "Decimal", qty: "Decimal"
-    ) -> str | None:
+    ) -> Optional[str]:
         """Place a limit order on the CSK INR spot book.
 
         symbol: base asset e.g. "BTC" → order placed on "btcinr"
@@ -405,7 +406,7 @@ class CoinSwitchClient:
 
     async def place_usdt_order(
         self, symbol: str, side: str, price: "Decimal", qty: "Decimal"
-    ) -> str | None:
+    ) -> Optional[str]:
         """Place a C2C USDT limit order (binance venue).
 
         symbol: base asset e.g. "BTC" → order placed on "btcusdt"
@@ -427,7 +428,7 @@ class CoinSwitchClient:
 
     async def place_usdtinr_order(
         self, side: str, price: "Decimal", qty: "Decimal"
-    ) -> str | None:
+    ) -> Optional[str]:
         """Place a USDT/INR limit order on the CSK spot book.
 
         qty: USDT amount (base).
@@ -476,7 +477,7 @@ class CoinSwitchClient:
         return balances
 
     async def fetch_triangular_books(
-        self, symbols: list | None = None, prefilter: bool = True
+        self, symbols: Optional[list] = None, prefilter: bool = True
     ) -> dict[str, TriBook]:
         """Fetch live 3-book snapshots for each symbol.
 

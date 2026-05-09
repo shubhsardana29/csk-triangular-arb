@@ -30,6 +30,7 @@ import logging
 from dataclasses import dataclass, field
 from decimal import Decimal
 from time import time
+from typing import Optional
 
 from core.models import PathResult, TriBook, TriIntent
 from strategy.order_poller import OrderPoller
@@ -89,7 +90,7 @@ class _ExecState:
     book:            TriBook          # snapshot at detection — used for leg 2/3 pricing
     leg_specs:       tuple[_LegSpec, _LegSpec, _LegSpec]
     proceeds:        Decimal = _ZERO  # output of the most-recently completed leg
-    timeout_handle:  asyncio.TimerHandle | None = None
+    timeout_handle:  Optional[asyncio.TimerHandle] = None
     # map: order_id → leg_num (1-indexed)
     oid_to_leg:      dict[str, int] = field(default_factory=dict)
 
@@ -277,7 +278,7 @@ class TriExecutor:
 
     async def _call_place_order(
         self, spec: _LegSpec, symbol: str, price: Decimal, qty: Decimal
-    ) -> str | None:
+    ) -> Optional[str]:
         if spec.venue == "spot_inr":
             return await self._client.place_spot_order(symbol, spec.side, price, qty)
         if spec.venue == "spot_usdt":
@@ -414,7 +415,7 @@ class TriExecutor:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
-    def _state_for_oid(self, oid: str) -> _ExecState | None:
+    def _state_for_oid(self, oid: str) -> Optional[_ExecState]:
         for state in self._states.values():
             if oid in state.oid_to_leg:
                 return state

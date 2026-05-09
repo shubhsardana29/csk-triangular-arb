@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal, ROUND_DOWN
+from typing import Optional
 
 
 # ── Depth ────────────────────────────────────────────────────────────────────
@@ -195,9 +196,9 @@ class TriIntent:
     symbol: str
     path: PathResult
     placed_at: float = 0.0
-    leg1_oid: str | None = None
-    leg2_oid: str | None = None
-    leg3_oid: str | None = None
+    leg1_oid: Optional[str] = None
+    leg2_oid: Optional[str] = None
+    leg3_oid: Optional[str] = None
     leg1_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
     leg2_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
     leg3_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
