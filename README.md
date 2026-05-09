@@ -350,3 +350,121 @@ SYMBOLS_WHITELIST=DOGE,NEAR,SUI,LINK
 - In real mode: if the bot crashes between Leg 1 and Leg 2, boot recovery will attempt to liquidate the stranded position on the next restart. Check logs for `[executor] recovery:` messages.
 - The rebalancer places passive maker orders — it will not fill instantly. Monitor USDT balance if running many INR-start trades.
 - Partial positions from timed-out legs are not guaranteed to be recovered automatically if the CSK orders API is unavailable at boot. Check `[executor] recovery: could not fetch recent orders` in logs.
+
+
+Trading Fee
+import requests
+import json
+
+url = "https://coinswitch.co/trade/api/v2/tradingFee"
+
+params = {
+  "exchange": "coinswitchx",
+}
+
+headers = {
+  'Content-Type': 'application/json',
+  'X-AUTH-APIKEY': <api-key>
+  'X-AUTH-SIGNATURE': <signature>
+}
+
+response = requests.request("GET", url, headers=headers, params=params)
+
+
+The above command returns JSON structured like this:
+
+{
+  "data": {
+    "coinswitchx": {
+      "AVAX": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "AXP": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "AXS": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "ETH": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "FIL": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "PENDLE": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "SHIB": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "USDT": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      },
+      "YFI": {
+        "maker_fee": 0.0009,
+        "taker_fee": 0.0009,
+        "maker_discount_percentage": 100,
+        "taker_discount_percentage": 100,
+        "maker_fee_after_discount": 0,
+        "taker_fee_after_discount": 0,
+        "timestamp": 1721909805
+      }
+    }
+  }
+}
+Use the following endpoint to check the trading fee applicable to you for an exchange:
+
+HTTP Request
+METHOD GET
+ENDPOINT https://coinswitch.co/trade/api/v2/tradingFee
+Request Parameters
+Parameter	Type	Mandatory	Description
+exchange	string	Yes	(case insensitive) Allowed values: "coinswitchx"/ "wazirx" / "c2c1"/ "c2c2"
