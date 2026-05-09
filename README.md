@@ -1,81 +1,116 @@
 # CoinSwitch Triangular Arbitrage Engine
 
-A multi-symbol triangular arbitrage scanner and executor for CoinSwitch. Consumes live WebSocket market data at 10Hz, evaluates four triangular paths per token, applies realistic fee and TDS accounting, and supports both paper trading (shadow mode) and real limit-order execution.
+A production-grade multi-symbol arbitrage engine for CoinSwitch. Runs two strategies simultaneously:
+
+- **3-leg triangular arb** — exploits price gaps across S/INR, S/USDT, and USDT/INR books
+- **2-leg spread arb** — exploits INR vs USDT price divergence on the same asset
+
+Consumes live WebSocket market data at 10Hz, applies exact fee + TDS accounting, and supports paper trading and real limit-order execution.
 
 ---
 
 ## How It Works
 
-### The Core Idea
+### Strategy 1 — 3-Leg Triangular Arbitrage
 
-For any token S (e.g. DOGE), there are two ways to arrive at its price:
-- **Direct:** Buy DOGE with INR on CSK → `DOGE/INR` market
-- **Indirect:** Buy USDT with INR, then buy DOGE with USDT → `USDT/INR` → `DOGE/USDT`
+For any token S (e.g. DOGE), three markets form a triangle: `S/INR` on CSK, `S/USDT` on Binance (via CSK C2C), and `USDT/INR` on CSK. When the implied prices disagree by more than costs, profit exists.
 
-When these two implied prices disagree by more than the cost of trading (fees + TDS), there is a profit to capture by trading through the triangle. The engine finds and executes that gap.
-
-### The 4 Paths (Evaluated Per Symbol, Per Tick)
+The engine evaluates **4 paths** per symbol every 100ms:
 
 ```
 Path 1 — token-start, INR leg cheap:
   SELL S/INR  →  BUY USDT/INR  →  BUY S/USDT
-  Start and end with S. Profit = more S than you started with.
+  Start and end with S.
 
 Path 2 — token-start, USDT leg cheap:
   SELL S/USDT  →  SELL USDT/INR  →  BUY S/INR
-  Start and end with S. Profit = more S than you started with.
+  Start and end with S.
 
 Path 3 — INR-start, INR leg cheap:
   BUY S/INR  →  SELL S/USDT  →  SELL USDT/INR
-  Start and end with INR. Profit = more INR than you started with.
+  Start and end with INR.
 
 Path 4 — INR-start, USDT leg cheap:
   BUY USDT/INR  →  BUY S/USDT  →  SELL S/INR
-  Start and end with INR. Profit = more INR than you started with.
+  Start and end with INR.
 ```
 
-The ranker evaluates all four every 100ms, picks the best net yield, and only fires if it clears the 1.5% breakeven floor.
+**Execution:** Leg 1 placed immediately. Leg 2 placed after Leg 1 fills. Leg 3 placed after Leg 2 fills. Before Leg 3 is placed, a **cost floor check** verifies the current book can still deliver profit — if not, the trade is aborted.
+
+### Strategy 2 — 2-Leg Spread Arbitrage
+
+Compares the CSK INR price of a token against the fair value derived from Binance USDT × USDT/INR rate. When they diverge beyond costs, profit exists with just 2 orders.
+
+```
+INR_CHEAP:     BUY S/INR on CSK  →  SELL S/USDT on CSK C2C
+INR_EXPENSIVE: BUY S/USDT on CSK C2C  →  SELL S/INR on CSK
+```
+
+**Execution:** Leg 1 placed immediately. Leg 2 placed after Leg 1 fills at `max(cost_floor, market_bid)`. Leg 2 is **repriced every tick** — if the market moves up, the sell price follows it. If it drops below the cost floor, the order rests at the floor and the operator is alerted after 60 seconds.
+
+### Position Locking
+
+Both strategies share a position lock. Only **one trade per symbol** runs at a time — whether 3-leg or 2-leg. A symbol is locked when a trade starts and released as soon as it settles. This prevents overexposure and double-entry.
 
 ### Cost Model
 
-Every cycle involves 3 legs. The costs stack:
-
-| Cost | Amount | Applied to |
+| Cost | Rate | Applied to |
 |---|---|---|
-| Taker fee | 0.1% per leg | All 3 legs (= 0.3% total) |
+| Taker fee | 0.1% per leg | Every order |
 | TDS | 1% per VDA sale | 1–2 sell legs per path |
 | Safety buffer | ~0.2% | Slippage, price movement |
 | **Breakeven floor** | **~1.5%** | Must beat this to profit |
 
-The ranker applies these deductions in sequence (not additively) so the math reflects how the exchange actually charges them.
+---
 
-### Architecture
+## Architecture
 
 ```
-Market Data Layer (100ms updates)
-├── feeds/binance_depth_ws.py  — S/USDT depth via Binance WS (@depth20@100ms)
-└── feeds/csk_public_ws.py     — S/INR + USDT/INR depth via CSK socket.io
+Market Data (100ms)
+├── feeds/binance_depth_ws.py   — S/USDT depth via Binance WS (@depth20@100ms)
+└── feeds/csk_public_ws.py      — S/INR + USDT/INR via CSK socket.io
 
-Strategy Layer (10Hz tick loop)
-├── strategy/tri_ranker.py      — stateless: VWAP + 4-path yield math + fee/TDS
-├── strategy/shadow_executor.py — paper fills on an in-memory balance dict
-├── strategy/tri_executor.py    — real 3-leg sequential limit orders via CSK REST
-├── strategy/order_poller.py    — 1Hz/10Hz REST polling for fill detection
-└── strategy/tri_engine.py      — orchestrates feeds, ranker, executor, watchdog
+Strategy (10Hz tick loop)
+├── strategy/tri_ranker.py       — stateless 4-path triangular VWAP scorer
+├── strategy/two_leg_ranker.py   — stateless 2-leg spread scorer (INR vs Binance fair price)
+├── strategy/shadow_executor.py  — paper fills on in-memory balances (3-leg)
+├── strategy/tri_executor.py     — real 3-leg sequential limit orders + boot recovery
+├── strategy/two_leg_executor.py — real 2-leg orders with cost-floor repricing
+├── strategy/tri_rebalancer.py   — passive maker USDT/INR restorer
+├── strategy/order_poller.py     — 1Hz/10Hz REST fill detection
+└── strategy/tri_engine.py       — orchestration: feeds, position lock, watchdog, cancel-all
 
 Core Types (core/models.py)
-├── Depth      — immutable order book snapshot (Decimal levels)
-├── TriBook    — 3 Depth objects per symbol (s_inr, s_usdt, usdt_inr)
-├── PathResult — one evaluated path (profit_pct, executable_qty, all Decimal)
-└── TriIntent  — in-flight 3-leg execution state
+├── Depth         — immutable order book snapshot (Decimal levels, VWAP walkers)
+├── TriBook       — 3 Depth objects per symbol (s_inr, s_usdt, usdt_inr)
+├── PathResult    — one evaluated 3-leg path (all Decimal)
+├── TwoLegResult  — one evaluated 2-leg opportunity (all Decimal)
+├── TriIntent     — in-flight 3-leg execution state
+└── TwoLegIntent  — in-flight 2-leg execution state (tracks cost floor)
 
 API / Wiring
-├── api_client.py  — CSK REST client (Ed25519 auth, discover_symbols, depth, orders, balances)
-├── main.py        — CLI entry point: discovers symbols at boot, wires components
+├── api_client.py  — CSK REST client (Ed25519 auth, discover_symbols, orders, balances)
+├── main.py        — CLI entry point
 └── dashboard.py   — aiohttp web server + SSE dashboard on :8080
 ```
 
-All financial arithmetic uses `Decimal` — no float drift. The strategy layer never imports feeds or `api_client`; they are injected at the wiring layer.
+All financial arithmetic uses `Decimal` — no float drift. Strategy code never imports feeds or `api_client` — they are injected at the wiring layer.
+
+---
+
+## Production Safety Features
+
+| Feature | What it does |
+|---|---|
+| **Position lock** | One open trade per symbol at a time — prevents double-entry |
+| **Staleness cancel-all** | If either WS feed goes silent >15s, all open orders are cancelled immediately |
+| **Boot cancel** | All open orders from a previous run are cancelled before the engine starts |
+| **Boot recovery** | If the bot crashed mid-3-leg (leaving unexpected token balances), it detects unmatched BUY orders in the last 2 hours and places a liquidating SELL |
+| **Cost floor (3-leg)** | Before placing Leg 3, verifies current book depth still delivers profit — aborts if not |
+| **Cost floor (2-leg)** | Leg 2 SELL never placed below `buy_avg × (1 + fee + TDS + safety)` |
+| **Leg timeout** | Any leg not filled within 30s is cancelled; partial proceeds continue if available |
+| **Stuck alert** | If Leg 2 (2-leg) is resting at the cost floor for >60s, a warning is logged |
+| **Rebalancer** | Passive maker BUY on USDT/INR when USDT share drops below 20% of portfolio |
 
 ---
 
@@ -106,119 +141,105 @@ MIN_PROFIT_PCT=0.015
 MAX_EXPOSURE_INR=25000
 MAX_EXPOSURE_USDT=250
 
-# Shadow portfolio size
+# Shadow portfolio size (paper trading)
 SHADOW_PORTFOLIO_TOTAL_INR=1000000
 
-# Symbol filtering (see Configuration section)
+# Symbol filtering
 SYMBOLS_BLACKLIST=BTC,ETH,SOL,XRP,ADA,AVAX,SHIB,PEPE,BONK,USDC,BUSD,DAI
 # SYMBOLS_WHITELIST=DOGE,NEAR,SUI   # uncomment to narrow to specific symbols
 
 # Execution mode
-# EXECUTION_MODE=shadow   ← paper trades only, safe (default)
+# EXECUTION_MODE=shadow   ← paper trades only (default)
 # EXECUTION_MODE=real     ← places real limit orders on CSK
 
-# Disable WebSocket, use 1.5s REST polling + fallback symbol list instead
+# Strategy switches
+TWO_LEG_ENABLED=true          # run 2-leg spread arb alongside 3-leg
+REBALANCER_ENABLED=true       # maintain USDT balance passively
+REBALANCER_USDT_FLOOR_PCT=0.20  # trigger rebalance below 20% USDT share
+REBALANCER_USDT_TARGET_PCT=0.35 # restore to 35%
+TWO_LEG_MIN_SPREAD_PCT=0.015    # minimum spread for 2-leg opportunity
+REPRICE_THRESHOLD_PCT=0.0005    # reprice 2-leg Leg 2 if market moves >0.05%
+STUCK_ALERT_AFTER_S=60          # log alert if 2-leg Leg 2 stuck at floor >60s
+
+# REST fallback — disable WebSocket, poll every 1.5s instead
 # USE_REST_FALLBACK=1
 
-# Slack alerts (all optional)
+# Slack alerts (optional)
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 SLACK_ALERTS_ENABLED=true
-SLACK_OPPORTUNITY_ALERTS_ENABLED=true
-SLACK_EXECUTION_ALERTS_ENABLED=true
 SLACK_ALERT_COOLDOWN_SECONDS=60
 ```
 
 ### 3. Run
 
-There are four ways to run the engine, from safest to most aggressive:
+---
+
+#### Option 1 — REST fallback, shadow mode (safest, good for first test)
+
+No WebSocket. Polls CSK REST every 1.5s. Uses the fallback symbol list from `config.py`. Run this first to verify credentials work.
+
+```bash
+USE_REST_FALLBACK=1 python3 main.py
+```
 
 ---
 
-#### Option 1 — REST fallback, shadow execution (safest, good for first test)
+#### Option 2 — WebSocket mode, shadow trading (recommended for monitoring)
 
-No WebSocket connections. Polls CSK REST every 1.5s. Uses `config.SYMBOLS` as the symbol list (no live discovery). Safe to run immediately to verify the setup works.
-
-```bash
-USE_REST_FALLBACK=1 python main.py
-```
-
-What happens:
-- Boots with the fallback symbol list from `config.py`
-- Fetches depth via REST every 1.5s
-- Runs the ranker and logs opportunities
-- Simulates fills on a paper portfolio — no real orders
-
----
-
-#### Option 2 — WebSocket mode, shadow execution (recommended for ongoing monitoring)
-
-Live 10Hz market data. Discovers all eligible symbols at boot (~50–80+ depending on what CSK lists). Paper trades only.
+Live 10Hz market data. Discovers all eligible symbols at boot (~100–300 depending on CSK's listings). Paper trades only — no real orders.
 
 ```bash
-python main.py
+python3 main.py
 ```
 
-**Set a whitelist first** — without one, discovery returns 300+ symbols which will overwhelm the WS feed. Add this to `.env`:
+**Recommended: set a whitelist** to keep the symbol count manageable:
 
 ```env
-SYMBOLS_WHITELIST=DOGE,NEAR,LINK,FET,POL,DOT,HBAR,SUI,INJ,RENDER,ARB,GALA,ENJ,UNI,ONDO,TRX,ICP,ACT,PARTI,BNB
+SYMBOLS_WHITELIST=DOGE,NEAR,LINK,FET,POL,DOT,HBAR,SUI,INJ,RENDER,ARB,GALA,ENJ,UNI,ONDO,TRX,ICP
 ```
-
-What happens:
-- Discovers eligible symbols at boot (intersection of CSK INR + Binance USDT pairs)
-- Opens Binance WS (`@depth20@100ms`) and CSK socket.io feeds
-- Ranks all paths every 100ms
-- Simulates fills on a paper portfolio — no real orders
-- Logs opportunities and shadow P&L
 
 ---
 
-#### Option 3 — WebSocket mode, shadow execution + dashboard
-
-Same as Option 2 but with a live browser dashboard on `http://localhost:8080`. Run in two terminals:
+#### Option 3 — Dashboard (shadow mode with live UI)
 
 ```bash
-# Terminal 1
-python dashboard.py
-
-# Terminal 2 (optional — dashboard already runs the engine internally)
-# Open http://localhost:8080 in your browser
+python3 dashboard.py
+# open http://localhost:8080
 ```
 
-The dashboard shows per-symbol spread cards, P&L sparklines, shadow inventory, and a live event feed. Click any symbol card for the full depth view.
+Per-symbol cards show:
+- Best 3-leg spread (net after fees + TDS) and which path
+- 2-leg spread (INR_CHEAP / INR_EXPENSIVE direction and spread %)
+- Shadow P&L sparkline
+- Recent opportunity and execution events
 
 ---
 
-#### Option 4 — WebSocket mode, real order execution (live trading)
+#### Option 4 — Real order execution (live trading)
 
-Places real limit orders on CSK. Only enable after running shadow mode for several weeks and confirming consistently positive net P&L.
+Places real limit orders. Only enable after confirming consistently positive shadow P&L over several weeks.
 
 ```bash
-EXECUTION_MODE=real python main.py
+EXECUTION_MODE=real python3 main.py
+# or with dashboard:
+EXECUTION_MODE=real python3 dashboard.py
 ```
 
-What happens:
-- Everything from Option 2, plus:
-- When net profit > 1.5% is detected, places 3 real limit orders sequentially
-- Leg 1 fires immediately; Legs 2 and 3 fire after each fill is confirmed by the order poller (10Hz polling)
-- Each leg has a 30-second timeout — stalled orders are cancelled
-- Real exchange balances are refreshed after each settlement
-
-**Read before using:**
-- If Leg 2 or Leg 3 times out, you are left with a partial open position — there is no automatic unwind.
-- Limit orders may not fill if the spread closes before execution completes.
-- Verify the CSK order endpoint field names in `api_client.py` match your account's API version.
+What happens when an opportunity is detected:
+- **3-leg**: Leg 1 placed immediately → Leg 2 after fill → cost floor checked → Leg 3 after fill
+- **2-leg**: Leg 1 (BUY) placed → Leg 2 (SELL) placed above cost floor after fill → Leg 2 repriced every tick
+- On crash/restart: boot recovery detects unmatched BUYs and liquidates stranded positions
 
 ---
 
 #### Summary
 
-| Option | Command | Data | Execution | Use when |
+| Option | Command | Data | Executes | Use when |
 |---|---|---|---|---|
-| 1 | `USE_REST_FALLBACK=1 python main.py` | REST 1.5s | Paper | First test, offline dev |
-| 2 | `python main.py` | WS 100ms | Paper | Ongoing monitoring |
-| 3 | `python dashboard.py` | WS 100ms | Paper | Monitoring with UI |
-| 4 | `EXECUTION_MODE=real python main.py` | WS 100ms | Real orders | Live trading |
+| 1 | `USE_REST_FALLBACK=1 python3 main.py` | REST 1.5s | Paper | First test, offline dev |
+| 2 | `python3 main.py` | WS 100ms | Paper | Ongoing monitoring |
+| 3 | `python3 dashboard.py` | WS 100ms | Paper | Monitoring with UI |
+| 4 | `EXECUTION_MODE=real python3 main.py` | WS 100ms | Real orders | Live trading |
 
 ---
 
@@ -226,93 +247,52 @@ What happens:
 
 ### What works in your favour
 
-- **10Hz market data** via WebSocket — you see opportunities before REST-based scanners
-- **VWAP-aware sizing** — if the book is too thin to absorb your trade size, the ranker marks it not executable rather than giving a false signal
-- **Dynamic symbol discovery** — scans every symbol CSK lists at boot; typically 50–80+ symbols vs. a fixed hardcoded list
-- **Decimal accounting** — the math is exact; no float rounding errors inflating paper P&L
+- **10Hz market data** via WebSocket — you see the opportunity before REST-based scanners
+- **Two strategies simultaneously** — 2-leg opportunities are more frequent and faster to execute than 3-leg
+- **VWAP-aware sizing** — thin books are marked non-executable, not acted on
+- **Dynamic symbol discovery** — evaluates every eligible symbol automatically at boot
+- **Cost floor enforcement** — never places a trade that can't break even at current prices
 
 ### What works against you
 
-**1. TDS is the main obstacle.**
-India's 1% TDS on VDA sales applies to 1–2 legs of every path. That alone costs 1–2% per cycle before any exchange fee. Your breakeven floor is ~1.5%. On CSK, spreads that wide are uncommon in calm markets.
+**1. TDS is the primary obstacle.**
+India's 1% TDS on every VDA sale applies to 1–2 legs per path. That alone costs 1–2% per cycle. Your breakeven floor is ~1.5%. In calm markets, spreads this wide are uncommon on liquid pairs.
 
-**2. CSK's USDT prices track Binance very tightly.**
-The C2C system links CSK USDT prices to Binance in near real-time. The gap this engine exploits — between INR-implied price and USDT-implied price — closes automatically most of the time.
+**2. Sequential fills create execution risk.**
+Leg 2 fires only after Leg 1 fills — often 1–5 seconds later. The spread can disappear before all legs complete. The 2-leg strategy has less execution risk than 3-leg (one fewer leg), but the same issue applies.
 
-**3. Sequential limit orders are slow.**
-True arbitrage profits most from near-simultaneous execution. Your system places Leg 2 only after Leg 1 fills, which takes seconds. The spread can disappear in that window.
+**3. CSK USDT prices track Binance tightly.**
+The C2C system links CSK USDT prices to Binance in near real-time. The gap this engine exploits closes automatically most of the time. Opportunities appear during volatility spikes, listings, and market dislocations.
 
 **4. Shadow P&L overstates real P&L.**
-Shadow fills assume you receive the VWAP you calculated. Real fills depend on order queue position and partial fills across legs. Expect real results to be 10–30% worse than shadow.
+Shadow fills assume best-bid/ask at the moment of detection. Real fills depend on queue position, partial fills, and market movement between legs. Expect real results to be 10–30% worse.
 
 ### Realistic expectations
 
 | Scenario | Likely outcome |
 |---|---|
-| Shadow mode, calm markets | Opportunities detected occasionally; net P&L near zero or slightly positive |
-| Shadow mode, volatile event (listing, crash) | Clear positive signal — this is when triangular arb genuinely works |
-| Real mode, calm markets | Breakeven to slightly negative once real fill quality is counted |
-| Real mode, volatile event | Positive — if all 3 fills complete before the spread closes |
+| Shadow mode, calm markets | Opportunities detected; net P&L near zero |
+| Shadow mode, volatile event | Clear positive signal — arb genuinely works during dislocations |
+| Real mode, calm markets | Breakeven to slightly negative after real fill quality |
+| Real mode, volatile event | Positive — if all legs complete before the spread closes |
 
-**The recommendation:** Run shadow mode for several weeks. If cumulative net P&L on the dashboard is consistently positive across multiple symbols, the edge is real and worth enabling real execution. If shadow is barely positive, real will be negative.
+**The recommendation:** Run shadow mode for at least 2–3 weeks across different market conditions. If cumulative shadow P&L is consistently positive across multiple symbols, the edge is real. If barely positive, real will be negative.
 
 ---
 
-## Configuration
+## Symbol Discovery
 
-### Symbol discovery
-
-At boot, the engine calls CSK's ticker API for both `coinswitchx` (INR pairs) and `binance` (USDT pairs), takes their intersection, and trades every symbol that has **both** a live `S/INR` and `S/USDT` book. This typically yields 50–80+ symbols automatically — no manual list needed.
-
-Control which symbols are included via env vars or `config.py`:
+At boot the engine intersects CSK's live INR pairs with Binance's live USDT pairs, excludes the blacklist, and trades every eligible symbol automatically. Typically 100–300 symbols found.
 
 ```env
-# Blacklist — always excluded (default list in config.py covers big-caps and stables)
-SYMBOLS_BLACKLIST=BTC,ETH,SOL,XRP,ADA,SHIB,PEPE,USDC
+# Always excluded (default blacklist in config.py)
+SYMBOLS_BLACKLIST=BTC,ETH,SOL,XRP,ADA,AVAX,SHIB,PEPE,BONK,USDC,BUSD,DAI
 
-# Whitelist — if set, only these symbols are traded (after eligibility check)
-# Leave unset to trade everything not blacklisted
+# Optional: restrict to specific symbols only
 SYMBOLS_WHITELIST=DOGE,NEAR,SUI,LINK
 ```
 
-The default blacklist in `config.py` excludes:
-- Large-caps (BTC, ETH, SOL, XRP, ADA, AVAX) — too efficient, spreads too thin after TDS
-- Meme coins (SHIB, PEPE, BONK) — ultra-thin books, VWAP degrades rapidly
-- Stablecoins (USDC, BUSD, DAI) — not arb-eligible by nature
-
-`config.SYMBOLS` is kept as a fallback only for `USE_REST_FALLBACK=1` (offline / no live discovery).
-
-### Exposure limits
-
-```python
-MAX_EXPOSURES = {
-    "INR":  Decimal("25000"),   # max INR notional per cycle
-    "USDT": Decimal("250"),     # max USDT notional per cycle
-}
-```
-
-### Shadow portfolio
-
-```python
-SHADOW_PORTFOLIO_TOTAL_INR = Decimal("1000000")  # ₹10 lakh starting portfolio
-SHADOW_INR_RESERVE_PCT     = Decimal("0.20")     # 20% kept as INR
-SHADOW_USDT_RESERVE_PCT    = Decimal("0.10")     # 10% kept as USDT
-# Remainder distributed equally across symbols unless SHADOW_TOKEN_WEIGHTS is set
-```
-
----
-
-## Dashboard
-
-Start with `python dashboard.py`, then open `http://localhost:8080`.
-
-Per-symbol cards show:
-- Best net spread (after fees + TDS) and the path that produces it
-- Direction (INR-start / token-start) and logical case label
-- Shadow P&L sparkline
-- Recent opportunity and execution events
-
-Click any card for a modal with full depth view (all 3 books), shadow balance breakdown, and P&L history chart.
+`config.SYMBOLS` is a fallback used only when `USE_REST_FALLBACK=1`.
 
 ---
 
@@ -320,35 +300,39 @@ Click any card for a modal with full depth view (all 3 books), shadow balance br
 
 ```
 .
-├── main.py                      # CLI entry point (wiring only)
-├── dashboard.py                 # aiohttp web server + SSE stream
-├── api_client.py                # CSK REST client (auth, depth, orders, balances)
-├── config.py                    # all tunables (fees, symbols, exposure caps)
-├── slack_notifier.py            # Slack webhook alerts with cooldown
+├── main.py                        # CLI entry point (wiring only)
+├── dashboard.py                   # aiohttp web server + SSE dashboard on :8080
+├── api_client.py                  # CSK REST client (auth, depth, orders, balances, recovery)
+├── config.py                      # all tunables (fees, symbols, exposure, rebalancer, 2-leg)
+├── slack_notifier.py              # Slack webhook alerts with cooldown
 ├── requirements.txt
 ├── core/
-│   ├── models.py                # Depth, TriBook, PathResult, TriIntent (Decimal)
-│   └── protocol.py              # ExchangeAdapter Protocol
+│   ├── models.py                  # Depth, TriBook, PathResult, TwoLegResult, intents (Decimal)
+│   └── protocol.py                # ExchangeAdapter Protocol
 ├── feeds/
-│   ├── binance_depth_ws.py      # Binance @depth20@100ms WebSocket feed
-│   └── csk_public_ws.py         # CSK socket.io DEPTH_UPDATE feed
+│   ├── binance_depth_ws.py        # Binance @depth20@100ms WebSocket feed
+│   └── csk_public_ws.py           # CSK socket.io depth feed (S/INR + USDT/INR)
 ├── strategy/
-│   ├── tri_ranker.py            # stateless 4-path VWAP ranker
-│   ├── shadow_executor.py       # paper portfolio simulator
-│   ├── tri_executor.py          # real 3-leg sequential order placement
-│   ├── order_poller.py          # 1Hz/10Hz REST fill detection
-│   └── tri_engine.py            # orchestration: feeds + tick loop + watchdog
+│   ├── tri_ranker.py              # stateless 4-path triangular scorer
+│   ├── two_leg_ranker.py          # stateless 2-leg spread scorer (vs Binance fair price)
+│   ├── shadow_executor.py         # paper portfolio simulator (3-leg)
+│   ├── tri_executor.py            # real 3-leg sequential orders + cost floor + boot recovery
+│   ├── two_leg_executor.py        # real 2-leg orders with repricing + cost floor + stuck alert
+│   ├── tri_rebalancer.py          # passive USDT/INR maker to maintain USDT balance
+│   ├── order_poller.py            # 1Hz idle / 10Hz active REST fill detection
+│   └── tri_engine.py              # orchestration: position lock, staleness cancel-all, watchdog
 ├── scripts/
-│   └── list_pairs.py            # symbol discovery tool
+│   └── list_pairs.py              # symbol discovery debug tool
 └── static/
-    └── index.html               # SSE dashboard UI
+    └── index.html                 # SSE dashboard UI
 ```
 
 ---
 
 ## Safety Notes
 
-- Always run shadow mode first and validate net P&L before enabling real execution.
-- Never set `EXECUTION_MODE=real` without reviewing the order endpoint paths in `api_client.py` against your CSK API documentation — field names may need adjustment for your account tier.
-- Partial positions from timed-out legs are not automatically unwound. Monitor logs whenever real mode is active.
-- Never commit `COINSWITCH_SECRET_KEY` to version control.
+- Always run shadow mode first. Only enable `EXECUTION_MODE=real` after weeks of positive shadow P&L.
+- Never commit your `COINSWITCH_SECRET_KEY` to version control.
+- In real mode: if the bot crashes between Leg 1 and Leg 2, boot recovery will attempt to liquidate the stranded position on the next restart. Check logs for `[executor] recovery:` messages.
+- The rebalancer places passive maker orders — it will not fill instantly. Monitor USDT balance if running many INR-start trades.
+- Partial positions from timed-out legs are not guaranteed to be recovered automatically if the CSK orders API is unavailable at boot. Check `[executor] recovery: could not fetch recent orders` in logs.

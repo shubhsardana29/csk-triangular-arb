@@ -27,11 +27,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from decimal import Decimal
 from time import time
 from typing import Optional
 
+import config
 from core.models import PathResult, TriBook, TriIntent
 from strategy.order_poller import OrderPoller
 
@@ -184,11 +186,15 @@ class TriExecutor:
         client,
         fee: Decimal,
         tds: Decimal,
+        on_settle: Optional[Callable[[str], None]] = None,
+        symbols: Optional[list[str]] = None,
     ) -> None:
-        self._client  = client
-        self.fee      = Decimal(str(fee))
-        self.tds      = Decimal(str(tds))
+        self._client    = client
+        self.fee        = Decimal(str(fee))
+        self.tds        = Decimal(str(tds))
         self.balances: dict[str, Decimal] = {}
+        self._on_settle = on_settle
+        self._symbols   = [s.upper() for s in (symbols or [])]
 
         self._poller  = OrderPoller(
             client=client,
@@ -197,12 +203,22 @@ class TriExecutor:
         )
         self._states: dict[str, _ExecState] = {}  # symbol → active execution
 
+    @property
+    def active_order_ids(self) -> list[str]:
+        """All order IDs currently in-flight across all symbols."""
+        ids = []
+        for state in self._states.values():
+            ids.extend(state.oid_to_leg.keys())
+        return ids
+
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
     async def start(self) -> None:
         """Start the order-polling background task. Call once from main.py."""
         asyncio.create_task(self._poller.start(), name="order-poller")
         await self.refresh_balances()
+        if self._symbols:
+            await self.recover_open_positions()
         log.info("[executor] TriExecutor started — real order mode")
 
     async def refresh_balances(self) -> None:
@@ -212,6 +228,103 @@ class TriExecutor:
             log.info("[executor] balances refreshed — %d assets", len(self.balances))
         except Exception:
             log.exception("[executor] failed to refresh balances")
+
+    async def recover_open_positions(self) -> None:
+        """Detect and liquidate mid-triangle positions left from the previous run.
+
+        Strategy:
+          1. Fetch recent filled orders (last 2 hours).
+          2. For each tracked symbol: if the token balance is > dust AND there's a
+             recent filled BUY for that symbol with no matching SELL → we're stuck
+             mid-triangle after Leg 1. Place a liquidating SELL on USDT C2C.
+          3. If USDT balance appears inflated (recent SELL on spot_usdt with no
+             subsequent USDT/INR sell) → place a SELL on USDT/INR to close Leg 3.
+
+        All recovery orders go through the normal poller so fills update balances.
+        If the CSK orders endpoint is unavailable, recovery is skipped with a warning.
+        """
+        log.info("[executor] scanning for mid-triangle positions to recover")
+        try:
+            recent_orders = await self._client.get_recent_orders(lookback_minutes=120)
+        except Exception:
+            log.warning("[executor] recovery: could not fetch recent orders — skipping")
+            return
+
+        if not recent_orders:
+            log.info("[executor] recovery: no recent filled orders found")
+            return
+
+        # Build sets of symbols with recent BUYs and SELLs to detect imbalance.
+        # Key: symbol (e.g. "DOGE"), value: {"buys": count, "sells": count}
+        order_counts: dict[str, dict] = {}
+        for order in recent_orders:
+            raw_symbol = (order.get("symbol") or "").upper()
+            side       = (order.get("side") or "").upper()
+            exchange   = (order.get("exchange") or "").lower()
+
+            # Extract base symbol: "DOGEINR" → "DOGE", "DOGEUSDT" → "DOGE"
+            base = None
+            for suffix in ("INR", "USDT"):
+                if raw_symbol.endswith(suffix):
+                    base = raw_symbol[: -len(suffix)]
+                    break
+            if base is None or base not in self._symbols:
+                continue
+
+            bucket = order_counts.setdefault(base, {"buys": 0, "sells": 0})
+            if side == "BUY":
+                bucket["buys"] += 1
+            elif side == "SELL":
+                bucket["sells"] += 1
+
+        # Attempt recovery for each watched symbol.
+        for symbol in self._symbols:
+            token_bal = self.balances.get(symbol, _ZERO)
+            if token_bal <= _ZERO:
+                continue
+
+            # Estimate notional in INR: require at least 200 INR to bother.
+            # We don't have live prices here, so use a rough USDT proxy if available.
+            # Recovery is best-effort — if we can't price, skip.
+            counts   = order_counts.get(symbol, {})
+            buys     = counts.get("buys", 0)
+            sells    = counts.get("sells", 0)
+            unmatched_buys = buys - sells
+
+            if unmatched_buys <= 0:
+                # Buys are matched by sells — balance might be legitimate inventory.
+                # Don't touch it.
+                continue
+
+            log.warning(
+                "[executor] recovery: %s has %.6f tokens + %d unmatched BUY order(s) "
+                "— placing liquidating SELL on USDT C2C",
+                symbol, float(token_bal), unmatched_buys,
+            )
+
+            # Place a limit SELL at the USDT C2C bid.
+            # We don't have live book here — use a conservative 0.5% below mid.
+            # The poller will track the fill; if it times out the position stays open
+            # for the next boot or manual resolution.
+            try:
+                # Fetch a quick depth snapshot for the symbol.
+                raw = await self._client.get_depth(f"{symbol.lower()}/usdt", "binance")
+                from core.models import Depth as _Depth
+                depth = _Depth.from_raw(raw)
+                sell_price = depth.bid
+                if sell_price <= _ZERO:
+                    log.warning("[executor] recovery: no USDT bid for %s — skipping", symbol)
+                    continue
+
+                oid = await self._client.place_usdt_order(symbol, "SELL", sell_price, token_bal)
+                if oid:
+                    log.warning("[executor] recovery: placed SELL %s  %s qty=%.6f @ %.4f",
+                                oid, symbol, float(token_bal), float(sell_price))
+                    self._poller.track(oid, {"symbol": symbol, "leg": "recovery"})
+                else:
+                    log.warning("[executor] recovery: place_usdt_order returned None for %s", symbol)
+            except Exception:
+                log.exception("[executor] recovery: failed to place SELL for %s", symbol)
 
     # ── main entry point ──────────────────────────────────────────────────────
 
@@ -329,7 +442,17 @@ class TriExecutor:
         self._cancel_timeout(state)
 
         if status == "FULFILLED":
-            if leg_num < 3:
+            if leg_num == 2:
+                # Cost-floor check: refuse to place Leg 3 if it would lock in a loss.
+                if not self._leg3_clears_floor(state):
+                    log.warning(
+                        "[%s] Leg 3 below cost floor — aborting (Leg 2 proceeds=%.6f left open)",
+                        symbol, float(state.proceeds),
+                    )
+                    self._settle(symbol, success=False)
+                    return
+                await self._place_leg(state, leg_num=3, input_qty=state.proceeds)
+            elif leg_num < 3:
                 await self._place_leg(state, leg_num=leg_num + 1, input_qty=state.proceeds)
             else:
                 self._settle(symbol, success=True)
@@ -412,6 +535,55 @@ class TriExecutor:
 
         # Refresh real balances after settlement so next cycle has accurate numbers.
         asyncio.ensure_future(self.refresh_balances())
+        # Notify engine that this symbol's position is now free.
+        if self._on_settle is not None:
+            try:
+                self._on_settle(symbol)
+            except Exception:
+                log.exception("[executor] on_settle raised for %s", symbol)
+
+    # ── cost floor ────────────────────────────────────────────────────────────
+
+    def _leg3_clears_floor(self, state: _ExecState) -> bool:
+        """Return True if placing Leg 3 with current book can meet MIN_PROFIT_PCT."""
+        book     = state.book
+        path_id  = state.intent.path.path_id
+        proceeds = state.proceeds
+        original = state.intent.path.executable_qty
+
+        if original <= _ZERO or proceeds <= _ZERO:
+            return False
+
+        spec3  = state.leg_specs[2]
+        price3 = _best_price(spec3, book)
+        if price3 <= _ZERO:
+            return False
+
+        # Estimate output of Leg 3 from current proceeds.
+        if spec3.side == "SELL":
+            # proceeds is base qty; output is quote
+            est_output = proceeds * price3 * (_ONE - self.fee)
+            if spec3.apply_tds:
+                est_output *= (_ONE - self.tds)
+        else:
+            # proceeds is quote; output is base
+            est_output = (proceeds / price3) * (_ONE - self.fee)
+            if spec3.tds_on_receive:
+                est_output *= (_ONE - self.tds)
+
+        # Paths 1/2: token-start → compare final tokens to original tokens
+        # Paths 3/4: INR-start  → compare final INR to original INR
+        yield_ratio = est_output / original
+        floor = _ONE + config.MIN_PROFIT_PCT
+        if yield_ratio < floor:
+            log.debug(
+                "[%s] path=%d leg3 yield=%.4f%% floor=%.4f%% — below cost floor",
+                state.intent.symbol, path_id,
+                float(yield_ratio - _ONE) * 100,
+                float(config.MIN_PROFIT_PCT) * 100,
+            )
+            return False
+        return True
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

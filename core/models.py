@@ -187,6 +187,28 @@ class PathResult:
     reason: str = ""          # populated when opportunity=False
 
 
+# ── TwoLegResult ─────────────────────────────────────────────────────────────
+
+@dataclass(frozen=True)
+class TwoLegResult:
+    """One evaluated 2-leg spread opportunity — buy cheap venue, sell expensive."""
+
+    symbol: str
+    direction: str           # "INR_CHEAP" | "INR_EXPENSIVE"
+    buy_venue: str           # "spot_inr" | "spot_usdt"
+    sell_venue: str          # "spot_usdt" | "spot_inr"
+    buy_price: Decimal       # worst-of-walk limit price (BUY leg)
+    sell_price: Decimal      # reference bid (SELL leg initial price)
+    qty: Decimal             # base qty to trade
+    base_currency: str       # always the symbol
+    spread_pct: Decimal      # (fair - vwap) / fair  or  (vwap - fair) / fair
+    profit_pct: Decimal      # net after fee + TDS
+    expected_profit_inr: Decimal
+    executable_qty: Decimal  # clamped to balance
+    opportunity: bool
+    reason: str = ""
+
+
 # ── TriIntent ─────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -202,3 +224,20 @@ class TriIntent:
     leg1_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
     leg2_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
     leg3_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
+
+
+# ── TwoLegIntent ──────────────────────────────────────────────────────────────
+
+@dataclass
+class TwoLegIntent:
+    """In-flight execution state for one 2-leg spread trade. Mutable by design."""
+
+    symbol: str
+    result: TwoLegResult
+    placed_at: float = 0.0
+    leg1_oid: Optional[str] = None
+    leg2_oid: Optional[str] = None
+    leg1_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
+    leg2_filled_qty: Decimal = field(default_factory=lambda: Decimal(0))
+    buy_avg_price: Decimal = field(default_factory=lambda: Decimal(0))
+    cost_floor: Decimal = field(default_factory=lambda: Decimal(0))    # floor for Leg 2 SELL

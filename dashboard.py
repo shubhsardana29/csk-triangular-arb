@@ -9,12 +9,14 @@ from aiohttp_sse import sse_response
 import os
 from api_client import CoinSwitchClient
 import config
-from core.models import Depth, PathResult, TriBook
+from core.models import Depth, PathResult, TriBook, TwoLegResult
 from feeds.binance_depth_ws import BinanceDepthFeed
 from feeds.csk_public_ws import CSKPublicWS
 from strategy.tri_ranker import TriRanker
+from strategy.two_leg_ranker import TwoLegRanker
 from strategy.shadow_executor import ShadowExecutor
 from strategy.tri_engine import TriEngine
+from strategy.tri_rebalancer import TriRebalancer
 from dotenv import load_dotenv
 import time
 
@@ -48,6 +50,21 @@ def _best_mark_price(depth: Optional[Depth]) -> float:
     if bid and ask:
         return (bid + ask) / 2.0
     return bid or ask or 0.0
+
+
+def _two_leg_to_dict(r: TwoLegResult) -> dict:
+    return {
+        "opportunity":         r.opportunity,
+        "reason":              r.reason,
+        "direction":           r.direction,
+        "buy_venue":           r.buy_venue,
+        "sell_venue":          r.sell_venue,
+        "spread_pct":          r.spread_pct,
+        "profit_pct":          r.profit_pct,
+        "executable_qty":      r.executable_qty,
+        "base_currency":       r.base_currency,
+        "expected_profit_inr": r.expected_profit_inr,
+    }
 
 
 def _path_to_dict(path: PathResult) -> dict:
@@ -249,15 +266,29 @@ async def market_loop(app):
     use_rest       = os.getenv("USE_REST_FALLBACK", "").lower() in {"1", "true", "yes"}
     execution_mode = os.getenv("EXECUTION_MODE", "shadow").strip().lower()
 
-    client = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
-    ranker = TriRanker()
+    client         = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
+    ranker         = TriRanker()
+    two_leg_ranker = TwoLegRanker() if config.TWO_LEG_ENABLED else None
+    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED else None
+
+    _settle_ref: list = []
+
+    def on_settle(symbol: str) -> None:
+        if _settle_ref:
+            _settle_ref[0](symbol)
 
     if execution_mode == "real":
         from strategy.tri_executor import TriExecutor
+        from strategy.two_leg_executor import TwoLegExecutor
         logger.warning("EXECUTION_MODE=real — LIVE ORDERS will be placed on CSK")
-        executor = TriExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE)
+        executor         = TriExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
+                                       on_settle=on_settle)
+        two_leg_executor = TwoLegExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
+                                          on_settle=on_settle) if config.TWO_LEG_ENABLED else None
     else:
-        executor = ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE)
+        executor         = ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE,
+                                          on_settle=on_settle)
+        two_leg_executor = None
 
     async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
         app_state.record_execution(symbol, net, gross, result)
@@ -266,15 +297,18 @@ async def market_loop(app):
         tri_books: dict[str, TriBook],
         ranked: dict,
         exec_results: dict,
+        ranked_2l: dict,
         cycle: int,
         latency_ms: float,
     ) -> None:
         symbol_data = {}
         for symbol, (net, gross) in ranked.items():
             balances = executor.balances
+            two_leg = ranked_2l.get(symbol)
             symbol_data[symbol] = {
                 "net":   _path_to_dict(net),
                 "gross": _path_to_dict(gross),
+                "two_leg": _two_leg_to_dict(two_leg) if two_leg else None,
                 "shadow_balances": {
                     "symbol": balances.get(symbol, 0),
                     "INR":    balances.get("INR",   0),
@@ -297,6 +331,9 @@ async def market_loop(app):
                 logger.error("Symbol discovery returned 0 symbols — aborting")
                 return
 
+        if hasattr(executor, "_symbols"):
+            executor._symbols = [s.upper() for s in symbols]
+
         binance_feed = None if use_rest else BinanceDepthFeed(symbols)
         csk_ws       = None if use_rest else CSKPublicWS()
 
@@ -307,9 +344,13 @@ async def market_loop(app):
             symbols=symbols,
             binance_feed=binance_feed,
             csk_ws=csk_ws,
+            two_leg_ranker=two_leg_ranker,
+            two_leg_executor=two_leg_executor,
+            rebalancer=rebalancer,
             on_opportunity=on_opportunity,
             on_tick=on_tick,
         )
+        _settle_ref.append(engine._on_settle)
         await engine.run()
 
 async def start_background_tasks(app):

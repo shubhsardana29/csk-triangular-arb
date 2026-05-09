@@ -440,6 +440,34 @@ class CoinSwitchClient:
         """Fetch current status of an order. Returns raw response dict."""
         return await self._get("/trade/api/v2/order", {"order_id": order_id})
 
+    async def list_open_orders(self) -> list[dict]:
+        """Return all currently open orders across all symbols."""
+        raw = await self._get("/trade/api/v2/orders", {"status": "open"})
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            return raw.get("orders", raw.get("data", []))
+        return []
+
+    async def get_recent_orders(self, lookback_minutes: int = 120) -> list[dict]:
+        """Return filled orders from the last `lookback_minutes` minutes.
+
+        Used at boot for mid-triangle recovery. Returns empty list on any error
+        so recovery degrades gracefully if the endpoint is unavailable.
+        """
+        import time as _time
+        since_ms = int((_time.time() - lookback_minutes * 60) * 1000)
+        raw = await self._get(
+            "/trade/api/v2/orders",
+            {"status": "FULFILLED", "from": since_ms},
+            timeout=8.0,
+        )
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, dict):
+            return raw.get("orders", raw.get("data", []))
+        return []
+
     async def get_balances(self) -> "dict[str, Decimal]":
         """Fetch wallet balances from CSK. Returns {asset: Decimal(available)}."""
         from decimal import Decimal as _D

@@ -12,7 +12,9 @@ swapping it requires only changing the injected executor in main.py.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from decimal import Decimal
+from typing import Optional
 
 from core.models import Depth, PathResult, TriBook
 
@@ -44,10 +46,16 @@ class ShadowExecutor:
         balances: dict[str, Decimal],
         fee: Decimal,
         tds: Decimal,
+        on_settle: Optional[Callable[[str], None]] = None,
     ):
         self.balances: dict[str, Decimal] = {k: Decimal(str(v)) for k, v in balances.items()}
         self.fee = Decimal(str(fee))
         self.tds  = Decimal(str(tds))
+        self._on_settle = on_settle   # ignored in shadow mode but kept for interface compat
+
+    @property
+    def active_order_ids(self) -> list[str]:
+        return []   # shadow mode has no real orders
 
     # ── lifecycle (matches TriExecutor interface) ─────────────────────────────
 
@@ -112,12 +120,21 @@ class ShadowExecutor:
             log.warning("ShadowExecutor: unknown path_id=%s for %s", path.path_id, symbol)
             return _empty
 
-        return {
+        result = {
             "result_balances": self.balances.copy(),
             "symbol_variance": self.balances.get(symbol, _ZERO) - pre_s,
             "inr_variance":    self.balances.get("INR",  _ZERO) - pre_inr,
             "usdt_variance":   self.balances.get("USDT", _ZERO) - pre_usd,
         }
+
+        # Release the position lock immediately — shadow trades settle synchronously.
+        if self._on_settle is not None:
+            try:
+                self._on_settle(symbol)
+            except Exception:
+                log.exception("[shadow] on_settle raised for %s", symbol)
+
+        return result
 
     # ── private: leg helpers ──────────────────────────────────────────────────
 

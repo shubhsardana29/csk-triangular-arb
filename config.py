@@ -85,6 +85,19 @@ DEFAULT_INR_EXPOSURE = Decimal(os.getenv("DEFAULT_INR_EXPOSURE", "25000"))
 ARBITRAGE_BASE_RETURN = Decimal("1")
 ARBITRAGE_MIN_PROFIT_THRESHOLD = Decimal(os.getenv("ARBITRAGE_MIN_PROFIT_THRESHOLD", "0.0001"))
 
+# 2-Leg Arb
+TWO_LEG_ENABLED = os.getenv("TWO_LEG_ENABLED", "true").lower() in {"1", "true", "yes"}
+# Reprice Leg 2 SELL if market moved more than this fraction
+REPRICE_THRESHOLD_PCT = Decimal(os.getenv("REPRICE_THRESHOLD_PCT", "0.0005"))  # 0.05%
+# Minimum spread to consider a 2-leg opportunity (must clear cost floor)
+TWO_LEG_MIN_SPREAD_PCT = Decimal(os.getenv("TWO_LEG_MIN_SPREAD_PCT", "0.015"))  # 1.5%
+STUCK_ALERT_AFTER_S = float(os.getenv("STUCK_ALERT_AFTER_S", "60"))
+
+# Rebalancer
+REBALANCER_ENABLED = os.getenv("REBALANCER_ENABLED", "true").lower() in {"1", "true", "yes"}
+REBALANCER_USDT_FLOOR_PCT = Decimal(os.getenv("REBALANCER_USDT_FLOOR_PCT", "0.20"))
+REBALANCER_USDT_TARGET_PCT = Decimal(os.getenv("REBALANCER_USDT_TARGET_PCT", "0.35"))
+
 # Shadow Portfolio
 SHADOW_PORTFOLIO_TOTAL_INR = Decimal(os.getenv("SHADOW_PORTFOLIO_TOTAL_INR", "1000000"))
 SHADOW_INR_RESERVE_PCT = Decimal(os.getenv("SHADOW_INR_RESERVE_PCT", "0.20"))

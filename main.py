@@ -18,13 +18,15 @@ from dotenv import load_dotenv
 
 import config
 from api_client import CoinSwitchClient
-from core.models import PathResult
+from core.models import PathResult, TwoLegResult
 from feeds.binance_depth_ws import BinanceDepthFeed
 from feeds.csk_public_ws import CSKPublicWS
 from slack_notifier import SlackNotifier
 from strategy.tri_ranker import TriRanker
+from strategy.two_leg_ranker import TwoLegRanker
 from strategy.shadow_executor import ShadowExecutor
 from strategy.tri_engine import TriEngine
+from strategy.tri_rebalancer import TriRebalancer
 
 load_dotenv()
 
@@ -64,17 +66,27 @@ def _format_execution_alert(symbol: str, net: PathResult, result: dict) -> str:
     )
 
 
-def _build_executor(execution_mode: str, client: CoinSwitchClient):
-    """Build the appropriate executor based on EXECUTION_MODE."""
+def _build_executor(execution_mode: str, client: CoinSwitchClient, on_settle=None, symbols=None):
+    """Build the appropriate 3-leg executor based on EXECUTION_MODE."""
     if execution_mode == "real":
         from strategy.tri_executor import TriExecutor
-        log.warning(
-            "[main] EXECUTION_MODE=real — LIVE ORDERS will be placed on CSK"
-        )
-        return TriExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE)
-
+        log.warning("[main] EXECUTION_MODE=real — LIVE ORDERS will be placed on CSK")
+        return TriExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
+                           on_settle=on_settle, symbols=symbols)
     log.info("[main] EXECUTION_MODE=shadow — paper trading only")
-    return ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE)
+    return ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE,
+                          on_settle=on_settle)
+
+
+def _build_two_leg_executor(execution_mode: str, client: CoinSwitchClient, on_settle=None):
+    """Build the appropriate 2-leg executor."""
+    if execution_mode == "real":
+        from strategy.two_leg_executor import TwoLegExecutor
+        return TwoLegExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
+                              on_settle=on_settle)
+    # Shadow mode: reuse ShadowExecutor — it won't place real 2-leg orders,
+    # but returning None disables 2-leg entirely in shadow mode for simplicity.
+    return None
 
 
 async def main() -> None:
@@ -88,9 +100,22 @@ async def main() -> None:
         username=config.SLACK_ALERT_USERNAME,
     )
 
-    client   = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
-    ranker   = TriRanker()
-    executor = _build_executor(execution_mode, client)
+    client         = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
+    ranker         = TriRanker()
+    two_leg_ranker = TwoLegRanker() if config.TWO_LEG_ENABLED else None
+    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED else None
+
+    # on_settle is wired after engine creation (engine owns _on_settle).
+    # We pass a lambda that will be bound to the engine instance below.
+    _settle_ref: list = []   # one-element list to allow closure rebind
+
+    def on_settle(symbol: str) -> None:
+        if _settle_ref:
+            _settle_ref[0](symbol)
+
+    # symbols not yet known — executor created before discovery; symbols wired after.
+    executor         = _build_executor(execution_mode, client, on_settle=on_settle)
+    two_leg_executor = _build_two_leg_executor(execution_mode, client, on_settle=on_settle)
 
     async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
         log.info(
@@ -124,6 +149,10 @@ async def main() -> None:
                 log.error("Symbol discovery returned 0 eligible symbols — exiting")
                 return
 
+        # Wire discovered symbols into the real executor for boot recovery.
+        if hasattr(executor, "_symbols"):
+            executor._symbols = [s.upper() for s in symbols]
+
         binance_feed = None
         csk_ws       = None
         if not use_rest:
@@ -137,14 +166,19 @@ async def main() -> None:
             symbols=symbols,
             binance_feed=binance_feed,
             csk_ws=csk_ws,
+            two_leg_ranker=two_leg_ranker,
+            two_leg_executor=two_leg_executor,
+            rebalancer=rebalancer,
             on_opportunity=on_opportunity,
         )
+        # Wire the settle callback to the engine's position-unlock method.
+        _settle_ref.append(engine._on_settle)
 
         log.info(
-            "Starting TriEngine — %s mode — %s execution — %d symbols",
+            "Starting TriEngine — %s mode — %s execution — %d symbols  2leg=%s  rebalancer=%s",
             "REST fallback" if use_rest else "WebSocket",
-            execution_mode,
-            len(symbols),
+            execution_mode, len(symbols),
+            config.TWO_LEG_ENABLED, config.REBALANCER_ENABLED,
         )
         async with notifier:
             await engine.run()
