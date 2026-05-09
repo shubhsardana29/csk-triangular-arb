@@ -56,6 +56,75 @@
     }
 
     .container { padding: 20px; max-width: 1600px; margin: 0 auto; }
+    .inventory-panel {
+      margin-bottom: 18px;
+      background: linear-gradient(135deg, oklch(0.15 0.03 260), oklch(0.13 0.02 235));
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 18px;
+    }
+    .inventory-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .inventory-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+    .inventory-subtitle {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .inventory-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .inventory-positions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .inventory-chip {
+      min-width: 120px;
+      background: oklch(1 0 0 / 0.04);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 10px 12px;
+    }
+    .inventory-chip-symbol {
+      font-size: 10px;
+      letter-spacing: 1.2px;
+      text-transform: uppercase;
+      color: var(--accent-cyan);
+      margin-bottom: 4px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .inventory-chip-qty {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 13px;
+      color: var(--text-primary);
+    }
+    .inventory-chip-value {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    .inventory-empty {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      color: var(--text-muted);
+      padding: 8px 0 2px;
+    }
 
     /* Top bar */
     .top-bar { display: flex; gap: 10px; margin-bottom: 24px; }
@@ -101,6 +170,17 @@
       font-size: 10px; color: var(--text-secondary);
       background: oklch(1 0 0 / 0.05); padding: 8px 12px; border-radius: 8px;
       border-left: 3px solid var(--accent-cyan);
+    }
+    .path-kicker {
+      font-size: 9px;
+      letter-spacing: 1.1px;
+      text-transform: uppercase;
+      color: var(--accent-cyan);
+      margin-bottom: 4px;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .path-detail {
+      line-height: 1.5;
     }
     .card-meta {
       display: flex;
@@ -379,6 +459,7 @@
     @media (max-width: 900px) {
       .modal-content { grid-template-columns: 1fr; }
       .container { padding: 16px; }
+      .inventory-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .hero-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .balance-strip { grid-template-columns: 1fr; }
       .depth-snapshot { grid-template-columns: 1fr; }
@@ -400,6 +481,37 @@
   </header>
 
   <div class="container">
+    <div class="inventory-panel">
+      <div class="inventory-head">
+        <div class="inventory-title">Shadow Inventory</div>
+        <div class="inventory-subtitle" id="inventorySubtitle">Waiting for initial shadow portfolio...</div>
+      </div>
+      <div class="inventory-grid">
+        <div class="mini-stat">
+          <div class="mini-stat-label">Total Portfolio Value</div>
+          <div class="mini-stat-value" id="inventoryTotalValue">₹0</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">INR Balance</div>
+          <div class="mini-stat-value" id="inventoryInr">₹0</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">USDT Balance / INR</div>
+          <div class="mini-stat-value" id="inventoryUsdt">0</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">Tracked Assets Held</div>
+          <div class="mini-stat-value" id="inventoryAssetCount">0</div>
+        </div>
+        <div class="mini-stat">
+          <div class="mini-stat-label">Configured Universe</div>
+          <div class="mini-stat-value" id="inventoryUniverse">0</div>
+        </div>
+      </div>
+      <div class="inventory-positions" id="inventoryPositions">
+        <div class="inventory-empty">No asset balances yet.</div>
+      </div>
+    </div>
     <div id="emptyState" style="text-align: center; padding: 100px; color: var(--text-muted); font-size: 14px;">
       Fetching real-time market snapshots...
     </div>
@@ -422,9 +534,9 @@
             </div>
             <div class="hero-grid">
               <div class="hero-stat">
-                <div class="mini-stat-label">Path Starts With</div>
-                <div class="mini-stat-value" id="mBaseCurrency">--</div>
-              </div>
+            <div class="mini-stat-label">Path Starts With</div>
+            <div class="mini-stat-value" id="mBaseCurrency">--</div>
+          </div>
               <div class="hero-stat">
                 <div class="mini-stat-label">Start Amount</div>
                 <div class="mini-stat-value" id="mExecQty">--</div>
@@ -492,7 +604,7 @@
           </div>
 
           <div>
-            <div class="label-tag">Execution Strategy</div>
+            <div class="label-tag">Logical Case / Route</div>
             <div class="path-bubble" id="mPath" style="font-size: 13px; padding: 16px;">--</div>
           </div>
 
@@ -531,6 +643,7 @@
     const allHistory = {}; // symbol -> spread array
     let latestSymbols = {};
     let recentEvents = {};
+    let latestShadowInventory = {};
     let activeSymbol = null;
     let firstUpdate = true;
     const cssVars = getComputedStyle(document.documentElement);
@@ -550,6 +663,8 @@
       const symbols = data.symbols;
       latestSymbols = symbols || {};
       recentEvents = data.recent_events || {};
+      latestShadowInventory = data.shadow_inventory || {};
+      renderShadowInventory(latestShadowInventory, symbols || {});
       
       Object.keys(symbols).forEach(s => {
         // Record History
@@ -588,13 +703,14 @@
       card.innerHTML = `
         <div class="card-head">
           <div class="s-name">${symbol}</div>
-          <div class="s-spread ${sClass}">${(profit > 0 ? '+' : '') + profit.toFixed(4)}%</div>
+          <div class="s-spread ${sClass}">${formatPercent(profit)}</div>
         </div>
         <div class="mini-chart-strip">
           <canvas id="strip-${symbol}" class="strip-canvas"></canvas>
         </div>
         <div class="path-bubble">
-          ${net.direction.split(' -> ').join(' ➜ ')}
+          <div class="path-kicker">${net.logical_case_label || 'Best route'} • ${formatInventoryMode(net.inventory_mode)}</div>
+          <div class="path-detail">${formatRoute(net.direction)}</div>
         </div>
         <div class="card-opportunity">
           <div class="mini-stat">
@@ -613,7 +729,7 @@
         <div class="card-event">
           <div class="card-event-label">Recent Activity</div>
           <div class="card-event-title">${event ? event.title : (net.opportunity ? 'Live opportunity' : 'Watching market')}</div>
-          <div class="card-event-detail">${event ? event.detail : `Gross ${gross.profit_pct.toFixed(4)}%`}</div>
+          <div class="card-event-detail">${event ? event.detail : `Gross ${formatPercent(gross.profit_pct)}`}</div>
         </div>
         <div class="card-meta">
           <span>${net.opportunity ? 'Actionable' : (net.reason || 'Monitoring')}</span>
@@ -623,6 +739,35 @@
       
       // Draw mini strip
       drawSparkline(`strip-${symbol}`, allHistory[symbol]);
+    }
+
+    function renderShadowInventory(inventory, symbols) {
+      const positions = Array.isArray(inventory.positions) ? inventory.positions.slice() : [];
+      positions.sort((a, b) => Number(b.market_value_inr || 0) - Number(a.market_value_inr || 0));
+
+      document.getElementById('inventoryTotalValue').textContent = formatCurrency(inventory.total_value_inr || 0);
+      document.getElementById('inventoryInr').textContent = formatCurrency(inventory.INR || 0);
+      document.getElementById('inventoryUsdt').textContent = `${formatCompact(inventory.USDT || 0)} / ${formatCurrency(inventory.usdt_value_inr || 0)}`;
+      document.getElementById('inventoryAssetCount').textContent = formatCompact(inventory.asset_count || 0);
+      document.getElementById('inventoryUniverse').textContent = formatCompact(Object.keys(symbols || {}).length);
+      document.getElementById('inventorySubtitle').textContent =
+        positions.length
+          ? `Live balances across ${positions.length} asset positions • Tokens marked at current INR book mid`
+          : 'Shadow portfolio is currently concentrated in INR and USDT';
+
+      const positionsEl = document.getElementById('inventoryPositions');
+      if (!positions.length) {
+        positionsEl.innerHTML = '<div class="inventory-empty">No asset balances yet.</div>';
+        return;
+      }
+
+      positionsEl.innerHTML = positions.map(position => `
+        <div class="inventory-chip">
+          <div class="inventory-chip-symbol">${position.symbol}</div>
+          <div class="inventory-chip-qty">${formatCompact(position.qty || 0)}</div>
+          <div class="inventory-chip-value">${formatCurrency(position.market_value_inr || 0)} @ ${formatPrice(position.mark_price_inr || 0)}</div>
+        </div>
+      `).join('');
     }
 
     function drawSparkline(id, history) {
@@ -679,11 +824,14 @@
       const lastExecution = data.last_execution || null;
       const cumulativePnl = data.cumulative_shadow_pnl || 0;
       
-      document.getElementById('mPath').textContent = net.direction.split(' -> ').join(' ➜ ');
+      document.getElementById('mPath').innerHTML = `
+        <div class="path-kicker">${net.logical_case_label || 'Best route'} • ${formatInventoryMode(net.inventory_mode)}</div>
+        <div class="path-detail">${formatRoute(net.direction)}</div>
+      `;
       const netV = document.getElementById('mNetVal');
-      netV.textContent = (net.profit_pct > 0 ? '+' : '') + net.profit_pct.toFixed(4) + '%';
+      netV.textContent = formatPercent(net.profit_pct);
       netV.className = 'stat-v ' + (net.profit_pct > 0 ? 'p-pos' : 'p-neg');
-      document.getElementById('mGrossVal').textContent = gross.profit_pct.toFixed(4) + '%';
+      document.getElementById('mGrossVal').textContent = formatPercent(gross.profit_pct);
       document.getElementById('mBaseCurrency').textContent = net.base_currency || '--';
       document.getElementById('mExecQty').textContent = formatAmountWithUnit(net.executable_qty || 0, net.base_currency || symbol);
       document.getElementById('mExpectedProfit').textContent = formatCurrency(net.expected_profit_inr || 0);
@@ -694,7 +842,7 @@
       document.getElementById('mBalSymbol').textContent = formatCompact(shadow.symbol || 0);
       document.getElementById('mBalInr').textContent = formatCurrency(shadow.INR || 0);
       document.getElementById('mBalUsdt').textContent = formatCompact(shadow.USDT || 0);
-      document.getElementById('mSummary').textContent = `${net.opportunity ? 'Actionable setup' : 'Monitoring'} • ${net.reason || 'Best available route'} • ${latestEvent ? latestEvent.title : 'No recent event'}`;
+      document.getElementById('mSummary').textContent = `${net.opportunity ? 'Actionable setup' : 'Monitoring'} • ${net.logical_case_label || 'Best available route'} • ${latestEvent ? latestEvent.title : 'No recent event'}`;
       const status = document.getElementById('mStatus');
       status.textContent = net.opportunity ? 'Opportunity Live' : 'Monitoring';
       status.className = 'hero-status ' + (net.opportunity ? 'live' : 'stale');
@@ -835,7 +983,7 @@
             <div class="event-title">${net.opportunity ? 'Live opportunity being monitored' : 'No recent signal transitions'}</div>
             <div class="event-time">now</div>
           </div>
-          <div class="event-detail">${net.direction}</div>
+          <div class="event-detail">${net.logical_case_label || 'Best route'} • ${formatRoute(net.direction)}</div>
         </div>`;
         return;
       }
@@ -862,6 +1010,21 @@
         return formatCurrency(value);
       }
       return `${formatCompact(value)} ${unit || ''}`.trim();
+    }
+
+    function formatPercent(value, digits = 4) {
+      const num = Number(value || 0) * 100;
+      return `${num >= 0 ? '+' : '-'}${Math.abs(num).toFixed(digits)}%`;
+    }
+
+    function formatRoute(direction) {
+      return (direction || '--').split(' -> ').join(' ➜ ');
+    }
+
+    function formatInventoryMode(mode) {
+      if (mode === 'token-start') return 'token inventory';
+      if (mode === 'inr-start') return 'INR inventory';
+      return mode || '--';
     }
 
     function formatPrice(value) {

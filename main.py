@@ -1,50 +1,86 @@
+"""Entry point — wiring only.
+
+Creates all components, wires callbacks, and calls engine.run().
+No strategy logic lives here.
+
+Env vars:
+  USE_REST_FALLBACK=1       — use 1.5s REST polling instead of 10Hz WS feeds
+  EXECUTION_MODE=shadow     — paper-trade only (default)
+  EXECUTION_MODE=real       — place real limit orders via CSK REST
+"""
+
 import asyncio
 import logging
-from api_client import CoinSwitchClient
-from arbitrage_engine import ArbitrageEngine, ShadowExecutor
+import os
+from decimal import Decimal
+
 from dotenv import load_dotenv
+
 import config
+from api_client import CoinSwitchClient
+from core.models import PathResult
+from feeds.binance_depth_ws import BinanceDepthFeed
+from feeds.csk_public_ws import CSKPublicWS
 from slack_notifier import SlackNotifier
+from strategy.tri_ranker import TriRanker
+from strategy.shadow_executor import ShadowExecutor
+from strategy.tri_engine import TriEngine
 
 load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
+config.log_config()
 
 
-def _format_opportunity_alert(symbol: str, net_opp: dict, gross_opp: dict) -> str:
-    start_amount = net_opp.get("executable_qty", 0.0)
-    expected_inr = net_opp.get("expected_profit_inr", 0.0)
+def _fmt_pct(value: Decimal) -> str:
+    return f"{float(value) * 100:+.4f}%"
+
+
+def _format_opportunity_alert(symbol: str, net: PathResult, gross: PathResult) -> str:
     return (
-        f":rotating_light: Opportunity detected for {symbol}\n"
-        f"Path: {net_opp.get('direction', 'Unknown')}\n"
-        f"Net spread: {net_opp.get('profit_pct', 0.0):+.4f}% | Gross: {gross_opp.get('profit_pct', 0.0):+.4f}%\n"
-        f"Start amount: {start_amount:.6f} {net_opp.get('base_currency', 'N/A')}\n"
-        f"Projected INR: {expected_inr:+.2f}"
+        f":rotating_light: Opportunity: {symbol}\n"
+        f"Case: {net.logical_case_label} ({net.inventory_mode})\n"
+        f"Route: {net.direction}\n"
+        f"Net: {_fmt_pct(net.profit_pct)}  Gross: {_fmt_pct(gross.profit_pct)}\n"
+        f"Start: {float(net.executable_qty):.6f} {net.base_currency}\n"
+        f"Projected INR: {float(net.expected_profit_inr):+.2f}"
     )
 
 
-def _format_execution_alert(symbol: str, result: dict) -> str:
-    balances = result.get("result_balances", {})
+def _format_execution_alert(symbol: str, net: PathResult, result: dict) -> str:
+    bal = result.get("result_balances", {})
     return (
-        f":white_check_mark: Shadow trade executed for {symbol}\n"
-        f"INR change: {result.get('inr_variance', 0.0):+.2f}\n"
-        f"{symbol} change: {result.get('symbol_variance', 0.0):+.6f}\n"
-        f"USDT change: {result.get('usdt_variance', 0.0):+.6f}\n"
-        f"Balances -> INR: {balances.get('INR', 0.0):,.2f}, USDT: {balances.get('USDT', 0.0):,.4f}, {symbol}: {balances.get(symbol, 0.0):,.6f}"
+        f":white_check_mark: Shadow trade: {symbol}\n"
+        f"INR Δ {float(result.get('inr_variance', 0)):+.2f}  "
+        f"{symbol} Δ {float(result.get('symbol_variance', 0)):+.6f}  "
+        f"USDT Δ {float(result.get('usdt_variance', 0)):+.6f}\n"
+        f"Balances → INR: {float(bal.get('INR', 0)):,.2f}  "
+        f"USDT: {float(bal.get('USDT', 0)):,.4f}  "
+        f"{symbol}: {float(bal.get(symbol, 0)):,.6f}"
     )
 
 
-async def main():
-    client = CoinSwitchClient(
-        config.COINSWITCH_API_KEY,
-        config.COINSWITCH_SECRET_KEY
-    )
-    engine = ArbitrageEngine()
-    executor = None
+def _build_executor(execution_mode: str, client: CoinSwitchClient):
+    """Build the appropriate executor based on EXECUTION_MODE."""
+    if execution_mode == "real":
+        from strategy.tri_executor import TriExecutor
+        log.warning(
+            "[main] EXECUTION_MODE=real — LIVE ORDERS will be placed on CSK"
+        )
+        return TriExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE)
+
+    log.info("[main] EXECUTION_MODE=shadow — paper trading only")
+    return ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE)
+
+
+async def main() -> None:
+    use_rest       = os.getenv("USE_REST_FALLBACK", "").lower() in {"1", "true", "yes"}
+    execution_mode = os.getenv("EXECUTION_MODE", "shadow").strip().lower()
+
     notifier = SlackNotifier(
         webhook_url=config.SLACK_WEBHOOK_URL,
         enabled=config.SLACK_ALERTS_ENABLED,
@@ -52,70 +88,70 @@ async def main():
         username=config.SLACK_ALERT_USERNAME,
     )
 
-    logger.info(f"Starting Multi-Symbol Arbitrage Engine: {', '.join(config.SYMBOLS)}")
-    if notifier.enabled:
-        logger.info("Slack webhook alerts enabled.")
-    else:
-        logger.info("Slack webhook alerts disabled. Engine will continue normally without notifications.")
+    client   = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
+    ranker   = TriRanker()
+    executor = _build_executor(execution_mode, client)
 
-    cycle = 0
-    async with client, notifier:
-        while True:
-            try:
-                # 1. Fetch live books for all symbols
-                tri_books = await client.fetch_triangular_books()
+    async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
+        log.info(
+            "[%s] path=%d  %s  yield=%s  gross=%s  qty=%.6f %s  profit_inr=%+.2f",
+            symbol, net.path_id, net.logical_case_label,
+            _fmt_pct(net.profit_pct), _fmt_pct(gross.profit_pct),
+            float(net.executable_qty), net.base_currency,
+            float(net.expected_profit_inr),
+        )
+        if config.SLACK_OPPORTUNITY_ALERTS_ENABLED:
+            await notifier.send(
+                _format_opportunity_alert(symbol, net, gross),
+                key=f"opp:{symbol}:{net.direction}:{round(float(net.profit_pct), 4)}",
+            )
+        if config.SLACK_EXECUTION_ALERTS_ENABLED and result:
+            await notifier.send(
+                _format_execution_alert(symbol, net, result),
+                key=f"exec:{symbol}:{net.direction}",
+            )
 
-                if executor is None:
-                    balances = config.build_initial_shadow_balances(config.SYMBOLS, tri_books)
-                    executor = ShadowExecutor(balances, config.TAKER_FEE, config.TDS_RATE)
-                    logger.info(
-                        "Initialized shadow portfolio at ~₹%s across %s with INR and USDT reserves",
-                        f"{config.SHADOW_PORTFOLIO_TOTAL_INR:,.0f}",
-                        ", ".join(config.SYMBOLS)
-                    )
-                
-                # 2. Calculate opportunities
-                all_opps = engine.calculate_multi_symbol_arbitrage(tri_books, executor.balances)
-                
-                # 3. Process each symbol
-                for symbol, opps in all_opps.items():
-                    net_opp = opps["net"]
-                    gross_opp = opps["gross"]
-                    
-                    if net_opp["opportunity"]:
-                        logger.info(f"🚀 --- OPPORTUNITY: {symbol} ---")
-                        logger.info(f"Direction: {net_opp['direction']}")
-                        logger.info(f"Yield: {net_opp['profit_pct']:.4f}% (Gross: {gross_opp['profit_pct']:.4f}%)")
+    async with client:
+        if use_rest:
+            symbols = config.SYMBOLS
+            log.info("REST mode — using fallback symbol list (%d symbols)", len(symbols))
+        else:
+            symbols = await client.discover_symbols(
+                whitelist=config.SYMBOLS_WHITELIST,
+                blacklist=config.SYMBOLS_BLACKLIST,
+            )
+            if not symbols:
+                log.error("Symbol discovery returned 0 eligible symbols — exiting")
+                return
 
-                        if config.SLACK_OPPORTUNITY_ALERTS_ENABLED:
-                            await notifier.send(
-                                _format_opportunity_alert(symbol, net_opp, gross_opp),
-                                key=f"opp:{symbol}:{net_opp.get('direction')}:{round(net_opp.get('profit_pct', 0.0), 4)}",
-                            )
-                        
-                        # Execute Shadow Trade
-                        result = executor.execute(net_opp, tri_books[symbol])
-                        logger.info(f"Shadow Result: {symbol} Var: {result['symbol_variance']:.4f}, INR Var: {result['inr_variance']:.2f}")
+        binance_feed = None
+        csk_ws       = None
+        if not use_rest:
+            binance_feed = BinanceDepthFeed(symbols)
+            csk_ws       = CSKPublicWS()
 
-                        if config.SLACK_EXECUTION_ALERTS_ENABLED:
-                            await notifier.send(
-                                _format_execution_alert(symbol, result),
-                                key=f"exec:{symbol}:{net_opp.get('direction')}",
-                            )
-                    
-                    # Periodic summary
-                    if cycle % 20 == 0:
-                        logger.info(f"[{symbol} Cycle {cycle}] Net: {net_opp['profit_pct']:.4f}%")
-                
-                cycle += 1
-                await asyncio.sleep(config.POLLING_INTERVAL)
-                
-            except Exception as e:
-                logger.error(f"Main Loop Error: {e}")
-                await asyncio.sleep(2)
+        engine = TriEngine(
+            client=client,
+            ranker=ranker,
+            executor=executor,
+            symbols=symbols,
+            binance_feed=binance_feed,
+            csk_ws=csk_ws,
+            on_opportunity=on_opportunity,
+        )
+
+        log.info(
+            "Starting TriEngine — %s mode — %s execution — %d symbols",
+            "REST fallback" if use_rest else "WebSocket",
+            execution_mode,
+            len(symbols),
+        )
+        async with notifier:
+            await engine.run()
+
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Engine stopped by user.")
+        log.info("Engine stopped.")

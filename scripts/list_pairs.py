@@ -126,6 +126,18 @@ def _extract_last_price(entry: dict) -> float:
         return 0.0
 
 
+def _volume_bucket(index: int, total: int) -> str:
+    if total <= 2:
+        return "mid"
+
+    rank_pct = (index + 1) / total
+    if rank_pct <= 0.25:
+        return "top"
+    if rank_pct > 0.75:
+        return "tail"
+    return "mid"
+
+
 async def _book_has_depth(client: CoinSwitchClient, symbol: str, exchange: str) -> bool:
     book = await client.get_depth(symbol.lower(), exchange, quiet_missing=True)
     return bool(book.get("bids") or book.get("asks"))
@@ -159,13 +171,25 @@ async def main() -> None:
         "--top",
         type=int,
         default=0,
-        help="Show only the top N triangular-ready symbols ranked by INR quote volume. Default: all",
+        help="Show only the first N symbols after selection-bucket filtering. Default: all",
     )
     parser.add_argument(
         "--min-volume",
         type=float,
         default=0.0,
         help="Keep only symbols with at least this INR quoteVolume from the all-pairs ticker.",
+    )
+    parser.add_argument(
+        "--max-volume",
+        type=float,
+        default=0.0,
+        help="Keep only symbols with at most this INR quoteVolume. Default: no upper cap",
+    )
+    parser.add_argument(
+        "--selection-bucket",
+        choices=("mid", "top", "tail", "all"),
+        default="mid",
+        help="Choose which liquidity band to print. Default: mid",
     )
     args = parser.parse_args()
 
@@ -234,13 +258,25 @@ async def main() -> None:
             if active_coin_set and symbol not in active_coin_set:
                 continue
             pair = f"{symbol}/INR"
+            quote_volume = pair_metrics.get(pair, {}).get("quote_volume", 0.0)
+            if args.max_volume > 0 and quote_volume > args.max_volume:
+                continue
             triangular_ready.append({
                 "symbol": symbol,
-                "quote_volume_inr": pair_metrics.get(pair, {}).get("quote_volume", 0.0),
+                "quote_volume_inr": quote_volume,
                 "last_price_inr": pair_metrics.get(pair, {}).get("last_price", 0.0),
             })
 
         triangular_ready.sort(key=lambda item: item["quote_volume_inr"], reverse=True)
+        for index, item in enumerate(triangular_ready):
+            item["liquidity_bucket"] = _volume_bucket(index, len(triangular_ready))
+
+        if args.selection_bucket != "all":
+            triangular_ready = [
+                item for item in triangular_ready
+                if item["liquidity_bucket"] == args.selection_bucket
+            ]
+
         if args.top > 0:
             triangular_ready = triangular_ready[:args.top]
 
@@ -254,6 +290,7 @@ async def main() -> None:
             "inr_symbols": inr_symbols,
             "triangular_ready_symbols": [item["symbol"] for item in triangular_ready],
             "triangular_ready_details": triangular_ready,
+            "selection_bucket": args.selection_bucket,
             "active_coins": sorted(active_coin_set),
         }
 
@@ -282,11 +319,13 @@ async def main() -> None:
         print()
         print("Triangular-ready symbols for this project")
         print("These have SYMBOL/INR on the spot exchange and SYMBOL/USDT depth on the cross exchange.")
+        print(f"Selection bucket: {args.selection_bucket}")
         if triangular_ready:
             for item in triangular_ready:
                 print(
                     f"  {item['symbol']}: INR volume {item['quote_volume_inr']:,.2f}, "
-                    f"last price {item['last_price_inr']:,.6f}"
+                    f"last price {item['last_price_inr']:,.6f}, "
+                    f"bucket {item['liquidity_bucket']}"
                 )
         else:
             print("None")

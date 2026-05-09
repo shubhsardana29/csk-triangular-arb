@@ -1,316 +1,354 @@
-# CoinSwitch PRO Triangular Arbitrage Engine
+# CoinSwitch Triangular Arbitrage Engine
 
-Multi-symbol triangular arbitrage scanner for CoinSwitch PRO. The project fetches live order book depth, evaluates four triangular paths per asset, applies fee and TDS logic, and streams the best net and gross opportunity for each configured token to a live dashboard.
+A multi-symbol triangular arbitrage scanner and executor for CoinSwitch. Consumes live WebSocket market data at 10Hz, evaluates four triangular paths per token, applies realistic fee and TDS accounting, and supports both paper trading (shadow mode) and real limit-order execution.
 
-The codebase no longer assumes a BTC-only strategy. It now works across the token list defined in [`config.py`](/home/shubh/codes/csk-triangular-arb/config.py), currently:
+---
 
-- `BTC`
-- `ETH`
-- `SOL`
-- `XRP`
-- `DOGE`
-- `ADA`
-- `BNB`
-- `TRX`
-- `UNI`
-- `DOT`
+## How It Works
 
-## What The Project Does
+### The Core Idea
 
-- Fetches depth for `SYMBOL/INR`, `SYMBOL/USDT`, and shared `USDT/INR`
-- Reuses `USDT/INR` across all symbols to reduce duplicate API calls
-- Computes four triangular arbitrage paths for every configured symbol
-- Produces both:
-  - `net` opportunity: after taker fee and TDS
-  - `gross` opportunity: before fee and tax deductions
-- Sizes trades using per-asset exposure caps and available shadow balances
-- Streams live symbol data to a browser dashboard over SSE
-- Supports shadow execution so you can validate logic without placing real orders
+For any token S (e.g. DOGE), there are two ways to arrive at its price:
+- **Direct:** Buy DOGE with INR on CSK → `DOGE/INR` market
+- **Indirect:** Buy USDT with INR, then buy DOGE with USDT → `USDT/INR` → `DOGE/USDT`
 
-## Project Structure
+When these two implied prices disagree by more than the cost of trading (fees + TDS), there is a profit to capture by trading through the triangle. The engine finds and executes that gap.
 
-- [`main.py`](/home/shubh/codes/csk-triangular-arb/main.py): runs the continuous multi-symbol arbitrage loop
-- [`dashboard.py`](/home/shubh/codes/csk-triangular-arb/dashboard.py): starts the web UI and SSE stream on port `8080`
-- [`api_client.py`](/home/shubh/codes/csk-triangular-arb/api_client.py): CoinSwitch REST client with ed25519 request signing and pooled `aiohttp` sessions
-- [`arbitrage_engine.py`](/home/shubh/codes/csk-triangular-arb/arbitrage_engine.py): shared VWAP pricing, path math, opportunity selection, and VWAP-aware shadow execution
-- [`config.py`](/home/shubh/codes/csk-triangular-arb/config.py): API keys, fees, symbols, exposure caps, and shadow portfolio allocation
-- [`static/index.html`](/home/shubh/codes/csk-triangular-arb/static/index.html): live multi-asset dashboard
+### The 4 Paths (Evaluated Per Symbol, Per Tick)
 
-## Strategy Model
+```
+Path 1 — token-start, INR leg cheap:
+  SELL S/INR  →  BUY USDT/INR  →  BUY S/USDT
+  Start and end with S. Profit = more S than you started with.
 
-For each symbol `S`, the engine evaluates these four routes:
+Path 2 — token-start, USDT leg cheap:
+  SELL S/USDT  →  SELL USDT/INR  →  BUY S/INR
+  Start and end with S. Profit = more S than you started with.
 
-1. `SELL S/INR -> BUY USDT/INR -> BUY S/USDT`
-2. `SELL S/USDT -> SELL USDT/INR -> BUY S/INR`
-3. `BUY S/INR -> SELL S/USDT -> SELL USDT/INR`
-4. `BUY USDT/INR -> BUY S/USDT -> SELL S/INR`
+Path 3 — INR-start, INR leg cheap:
+  BUY S/INR  →  SELL S/USDT  →  SELL USDT/INR
+  Start and end with INR. Profit = more INR than you started with.
 
-The engine chooses the best path separately for net and gross yield, then builds an executable opportunity payload with:
-
-- `symbol`
-- `direction`
-- `base_currency`
-- `executable_qty`
-- `profit_pct`
-- `expected_profit_inr`
-- `depth`
-
-If the best spread is not positive enough, the engine marks the result as not actionable.
-
-## Pricing, Fees, And TDS
-
-### VWAP-aware fills
-
-The engine does not rely only on top-of-book prices. It calculates VWAP against the requested trade size and returns `0.0` when book depth is insufficient.
-
-This is now used in both layers:
-
-- opportunity detection
-- shadow execution
-
-### Sequential deductions
-
-Net yields are computed with sequential deductions:
-
-`gross_amount * (1 - taker_fee) * (1 - tds)`
-
-This is applied only where appropriate:
-
-- buy legs: fee only
-- VDA sell legs: fee and TDS
-
-Default values come from environment-backed config:
-
-- `TAKER_FEE=0.001`
-- `TDS_RATE=0.01`
-
-## Multi-Symbol Configuration
-
-Edit [`config.py`](/home/shubh/codes/csk-triangular-arb/config.py) to control the universe and position sizing.
-
-### Symbols scanned
-
-```python
-SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "ADA", "BNB", "TRX", "UNI", "DOT"]
+Path 4 — INR-start, USDT leg cheap:
+  BUY USDT/INR  →  BUY S/USDT  →  SELL S/INR
+  Start and end with INR. Profit = more INR than you started with.
 ```
 
-### Per-cycle exposure caps
+The ranker evaluates all four every 100ms, picks the best net yield, and only fires if it clears the 1.5% breakeven floor.
 
-```python
-MAX_EXPOSURES = {
-    "BTC": 0.012,
-    "ETH": 0.15,
-    "SOL": 5.0,
-    "XRP": 1200.0,
-    "DOGE": 12000.0,
-    "ADA": 1800.0,
-    "BNB": 1.2,
-    "TRX": 6000.0,
-    "UNI": 120.0,
-    "DOT": 250.0,
-    "INR": 100000.0,
-    "USDT": 1000.0
-}
+### Cost Model
+
+Every cycle involves 3 legs. The costs stack:
+
+| Cost | Amount | Applied to |
+|---|---|---|
+| Taker fee | 0.1% per leg | All 3 legs (= 0.3% total) |
+| TDS | 1% per VDA sale | 1–2 sell legs per path |
+| Safety buffer | ~0.2% | Slippage, price movement |
+| **Breakeven floor** | **~1.5%** | Must beat this to profit |
+
+The ranker applies these deductions in sequence (not additively) so the math reflects how the exchange actually charges them.
+
+### Architecture
+
+```
+Market Data Layer (100ms updates)
+├── feeds/binance_depth_ws.py  — S/USDT depth via Binance WS (@depth20@100ms)
+└── feeds/csk_public_ws.py     — S/INR + USDT/INR depth via CSK socket.io
+
+Strategy Layer (10Hz tick loop)
+├── strategy/tri_ranker.py      — stateless: VWAP + 4-path yield math + fee/TDS
+├── strategy/shadow_executor.py — paper fills on an in-memory balance dict
+├── strategy/tri_executor.py    — real 3-leg sequential limit orders via CSK REST
+├── strategy/order_poller.py    — 1Hz/10Hz REST polling for fill detection
+└── strategy/tri_engine.py      — orchestrates feeds, ranker, executor, watchdog
+
+Core Types (core/models.py)
+├── Depth      — immutable order book snapshot (Decimal levels)
+├── TriBook    — 3 Depth objects per symbol (s_inr, s_usdt, usdt_inr)
+├── PathResult — one evaluated path (profit_pct, executable_qty, all Decimal)
+└── TriIntent  — in-flight 3-leg execution state
+
+API / Wiring
+├── api_client.py  — CSK REST client (Ed25519 auth, discover_symbols, depth, orders, balances)
+├── main.py        — CLI entry point: discovers symbols at boot, wires components
+└── dashboard.py   — aiohttp web server + SSE dashboard on :8080
 ```
 
-The engine uses these limits together with current balances to determine the path start amount for each cycle.
+All financial arithmetic uses `Decimal` — no float drift. The strategy layer never imports feeds or `api_client`; they are injected at the wiring layer.
 
-### Shadow portfolio controls
-
-`config.py` also owns the starting shadow portfolio:
-
-```python
-SHADOW_PORTFOLIO_TOTAL_INR = 1_000_000.0
-SHADOW_INR_RESERVE_PCT = 0.20
-SHADOW_USDT_RESERVE_PCT = 0.10
-SHADOW_TOKEN_WEIGHTS = {
-    "BTC": 0.28,
-    "ETH": 0.18,
-    "SOL": 0.12,
-    "XRP": 0.10,
-    "DOGE": 0.06,
-    "ADA": 0.07,
-    "BNB": 0.08,
-    "TRX": 0.04,
-    "UNI": 0.04,
-    "DOT": 0.03,
-}
-```
-
-At startup, the app builds a roughly 10 lakh INR shadow portfolio from live prices:
-
-- 20% reserved as INR
-- 10% reserved as USDT
-- 70% distributed across tracked tokens using the configured weights
-
-## Dashboard
-
-The dashboard in [`dashboard.py`](/home/shubh/codes/csk-triangular-arb/dashboard.py) serves [`static/index.html`](/home/shubh/codes/csk-triangular-arb/static/index.html) and pushes updates over `EventSource` from `/events`.
-
-For each configured symbol, the UI shows:
-
-- latest best net spread
-- selected arbitrage path
-- compact `SYMBOL/INR` and `SYMBOL/USDT` depth snapshots on the main cards
-- recent activity on the main cards
-- spread history sparkline on the cards
-- modal detail view with:
-  - path start currency
-  - start amount
-  - projected INR
-  - recent execution stats
-  - shadow balances
-  - spread history chart
-  - shadow P&L chart
-- modal depth view for all three books:
-  - `SYMBOL/INR`
-  - `SYMBOL/USDT`
-  - `USDT/INR`
-- recent activity feed with opportunity and shadow execution events
-- fetch latency and cycle count
-
-## Shadow Execution
-
-`main.py` uses `ShadowExecutor` by default. No live orders are submitted.
-
-The executor:
-
-- starts from a config-driven shadow portfolio built from live market prices
-- updates balances after each detected net opportunity
-- uses VWAP-based fills instead of only top-of-book prices
-- reports symbol, INR, and USDT balance deltas after each simulated cycle
-
-This makes it safer to validate strategy behavior before wiring in real execution.
-
-## CoinSwitch API Notes
-
-- Authentication uses `COINSWITCH_API_KEY` and `COINSWITCH_SECRET_KEY`
-- `COINSWITCH_API_SECRET` is also accepted as a fallback env name for compatibility
-- Requests are signed with ed25519 in [`api_client.py`](/home/shubh/codes/csk-triangular-arb/api_client.py)
-- `SYMBOL/USDT` depth is fetched from `binance` by default
-- `USDT/INR` and `SYMBOL/INR` depth are fetched from `coinswitchx`
-- The client handles `429` responses by returning empty books for that request
+---
 
 ## Setup
 
-### 1. Install Python dependencies
-
-Install the packages used by the current code:
+### 1. Install dependencies
 
 ```bash
-pip install aiohttp aiohttp_sse cryptography python-dotenv
+python3 -m venv venv && source venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2. Configure environment variables
+### 2. Configure environment
 
 Create a `.env` file in the project root:
 
 ```env
+# Required
 COINSWITCH_API_KEY=your_api_key
-COINSWITCH_SECRET_KEY=your_hex_secret_key
+COINSWITCH_SECRET_KEY=your_hex_ed25519_secret
+
+# Trading costs — defaults shown
 TAKER_FEE=0.001
 TDS_RATE=0.01
-```
+MIN_PROFIT_PCT=0.015
 
-Notes:
+# Exposure caps per cycle
+MAX_EXPOSURE_INR=25000
+MAX_EXPOSURE_USDT=250
 
-- `COINSWITCH_SECRET_KEY` must be a valid hex string
-- `COINSWITCH_API_SECRET` is also accepted by the current code
-- `TAKER_FEE` and `TDS_RATE` are optional because defaults exist in `config.py`
-- Slack alerts are optional. Add `SLACK_WEBHOOK_URL` if you want webhook notifications
+# Shadow portfolio size
+SHADOW_PORTFOLIO_TOTAL_INR=1000000
 
-Optional Slack env vars:
+# Symbol filtering (see Configuration section)
+SYMBOLS_BLACKLIST=BTC,ETH,SOL,XRP,ADA,AVAX,SHIB,PEPE,BONK,USDC,BUSD,DAI
+# SYMBOLS_WHITELIST=DOGE,NEAR,SUI   # uncomment to narrow to specific symbols
 
-```env
+# Execution mode
+# EXECUTION_MODE=shadow   ← paper trades only, safe (default)
+# EXECUTION_MODE=real     ← places real limit orders on CSK
+
+# Disable WebSocket, use 1.5s REST polling + fallback symbol list instead
+# USE_REST_FALLBACK=1
+
+# Slack alerts (all optional)
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
 SLACK_ALERTS_ENABLED=true
 SLACK_OPPORTUNITY_ALERTS_ENABLED=true
 SLACK_EXECUTION_ALERTS_ENABLED=true
 SLACK_ALERT_COOLDOWN_SECONDS=60
-SLACK_ALERT_USERNAME=OmniArb
 ```
 
-### 3. Tune symbols and limits
+### 3. Run
 
-Update [`config.py`](/home/shubh/codes/csk-triangular-arb/config.py) if you want to:
+There are four ways to run the engine, from safest to most aggressive:
 
-- add or remove supported tokens
-- adjust `POLLING_INTERVAL`
-- change per-asset exposure limits
-- change shadow portfolio size, reserves, or token weights
+---
 
-If you want to explore more symbols before editing `SYMBOLS`, use the pair-discovery script:
+#### Option 1 — REST fallback, shadow execution (safest, good for first test)
+
+No WebSocket connections. Polls CSK REST every 1.5s. Uses `config.SYMBOLS` as the symbol list (no live discovery). Safe to run immediately to verify the setup works.
 
 ```bash
-python scripts/list_pairs.py
+USE_REST_FALLBACK=1 python main.py
 ```
 
-Useful variants:
+What happens:
+- Boots with the fallback symbol list from `config.py`
+- Fetches depth via REST every 1.5s
+- Runs the ranker and logs opportunities
+- Simulates fills on a paper portfolio — no real orders
 
-```bash
-python scripts/list_pairs.py --json
-python scripts/list_pairs.py --spot-exchange coinswitchx --cross-exchange binance
-python scripts/list_pairs.py --top 25 --min-volume 100000
-```
+---
 
-The script:
+#### Option 2 — WebSocket mode, shadow execution (recommended for ongoing monitoring)
 
-- fetches the current spot pair list from CoinSwitch
-- fetches the current active coin list
-- checks whether `USDT/INR` depth exists
-- verifies which `SYMBOL/USDT` books exist on the configured cross exchange
-- ranks the usable symbols by INR quote volume
-- supports `--top` and `--min-volume` to reduce noisy long-tail assets
-- prints a `triangular-ready symbols` shortlist you can copy into `config.SYMBOLS`
-
-### 4. Run the engine
+Live 10Hz market data. Discovers all eligible symbols at boot (~50–80+ depending on what CSK lists). Paper trades only.
 
 ```bash
 python main.py
 ```
 
-This starts the multi-symbol arbitrage loop in shadow mode and logs opportunities to the terminal.
+**Set a whitelist first** — without one, discovery returns 300+ symbols which will overwhelm the WS feed. Add this to `.env`:
 
-If Slack alerts are configured, `main.py` will also send webhook notifications for:
-
-- detected opportunities
-- shadow trade executions
-
-### 5. Run the dashboard
-
-In another terminal:
-
-```bash
-python dashboard.py
+```env
+SYMBOLS_WHITELIST=DOGE,NEAR,LINK,FET,POL,DOT,HBAR,SUI,INJ,RENDER,ARB,GALA,ENJ,UNI,ONDO,TRX,ICP,ACT,PARTI,BNB
 ```
 
-Then open `http://localhost:8080`.
+What happens:
+- Discovers eligible symbols at boot (intersection of CSK INR + Binance USDT pairs)
+- Opens Binance WS (`@depth20@100ms`) and CSK socket.io feeds
+- Ranks all paths every 100ms
+- Simulates fills on a paper portfolio — no real orders
+- Logs opportunities and shadow P&L
 
-## Example Runtime Flow
+---
 
-1. Fetch all required books for the configured symbol list
-2. Group market depth into per-symbol triangles
-3. Calculate all four paths for each symbol
-4. Compare gross and net yields
-5. Pick the best path
-6. Stream the result to the dashboard
-7. In `main.py`, shadow-execute positive net opportunities
+#### Option 3 — WebSocket mode, shadow execution + dashboard
 
-## Important Limitations
+Same as Option 2 but with a live browser dashboard on `http://localhost:8080`. Run in two terminals:
 
-- This repo currently simulates execution only
-- There is no live order placement path enabled in the current runtime
-- The dashboard reads market state only and does not trade
-- Empty or shallow books will zero out the affected path
-- Tight polling can still hit exchange rate limits depending on symbol count and market conditions
+```bash
+# Terminal 1
+python dashboard.py
 
-## Safety Reminder
+# Terminal 2 (optional — dashboard already runs the engine internally)
+# Open http://localhost:8080 in your browser
+```
 
-Before enabling any real trading flow, review:
+The dashboard shows per-symbol spread cards, P&L sparklines, shadow inventory, and a live event feed. Click any symbol card for the full depth view.
 
-- fee assumptions
-- TDS treatment
-- exposure caps
-- actual available liquidity
-- CoinSwitch account permissions
-- failure handling and order state reconciliation
+---
+
+#### Option 4 — WebSocket mode, real order execution (live trading)
+
+Places real limit orders on CSK. Only enable after running shadow mode for several weeks and confirming consistently positive net P&L.
+
+```bash
+EXECUTION_MODE=real python main.py
+```
+
+What happens:
+- Everything from Option 2, plus:
+- When net profit > 1.5% is detected, places 3 real limit orders sequentially
+- Leg 1 fires immediately; Legs 2 and 3 fire after each fill is confirmed by the order poller (10Hz polling)
+- Each leg has a 30-second timeout — stalled orders are cancelled
+- Real exchange balances are refreshed after each settlement
+
+**Read before using:**
+- If Leg 2 or Leg 3 times out, you are left with a partial open position — there is no automatic unwind.
+- Limit orders may not fill if the spread closes before execution completes.
+- Verify the CSK order endpoint field names in `api_client.py` match your account's API version.
+
+---
+
+#### Summary
+
+| Option | Command | Data | Execution | Use when |
+|---|---|---|---|---|
+| 1 | `USE_REST_FALLBACK=1 python main.py` | REST 1.5s | Paper | First test, offline dev |
+| 2 | `python main.py` | WS 100ms | Paper | Ongoing monitoring |
+| 3 | `python dashboard.py` | WS 100ms | Paper | Monitoring with UI |
+| 4 | `EXECUTION_MODE=real python main.py` | WS 100ms | Real orders | Live trading |
+
+---
+
+## Profitability Assessment
+
+### What works in your favour
+
+- **10Hz market data** via WebSocket — you see opportunities before REST-based scanners
+- **VWAP-aware sizing** — if the book is too thin to absorb your trade size, the ranker marks it not executable rather than giving a false signal
+- **Dynamic symbol discovery** — scans every symbol CSK lists at boot; typically 50–80+ symbols vs. a fixed hardcoded list
+- **Decimal accounting** — the math is exact; no float rounding errors inflating paper P&L
+
+### What works against you
+
+**1. TDS is the main obstacle.**
+India's 1% TDS on VDA sales applies to 1–2 legs of every path. That alone costs 1–2% per cycle before any exchange fee. Your breakeven floor is ~1.5%. On CSK, spreads that wide are uncommon in calm markets.
+
+**2. CSK's USDT prices track Binance very tightly.**
+The C2C system links CSK USDT prices to Binance in near real-time. The gap this engine exploits — between INR-implied price and USDT-implied price — closes automatically most of the time.
+
+**3. Sequential limit orders are slow.**
+True arbitrage profits most from near-simultaneous execution. Your system places Leg 2 only after Leg 1 fills, which takes seconds. The spread can disappear in that window.
+
+**4. Shadow P&L overstates real P&L.**
+Shadow fills assume you receive the VWAP you calculated. Real fills depend on order queue position and partial fills across legs. Expect real results to be 10–30% worse than shadow.
+
+### Realistic expectations
+
+| Scenario | Likely outcome |
+|---|---|
+| Shadow mode, calm markets | Opportunities detected occasionally; net P&L near zero or slightly positive |
+| Shadow mode, volatile event (listing, crash) | Clear positive signal — this is when triangular arb genuinely works |
+| Real mode, calm markets | Breakeven to slightly negative once real fill quality is counted |
+| Real mode, volatile event | Positive — if all 3 fills complete before the spread closes |
+
+**The recommendation:** Run shadow mode for several weeks. If cumulative net P&L on the dashboard is consistently positive across multiple symbols, the edge is real and worth enabling real execution. If shadow is barely positive, real will be negative.
+
+---
+
+## Configuration
+
+### Symbol discovery
+
+At boot, the engine calls CSK's ticker API for both `coinswitchx` (INR pairs) and `binance` (USDT pairs), takes their intersection, and trades every symbol that has **both** a live `S/INR` and `S/USDT` book. This typically yields 50–80+ symbols automatically — no manual list needed.
+
+Control which symbols are included via env vars or `config.py`:
+
+```env
+# Blacklist — always excluded (default list in config.py covers big-caps and stables)
+SYMBOLS_BLACKLIST=BTC,ETH,SOL,XRP,ADA,SHIB,PEPE,USDC
+
+# Whitelist — if set, only these symbols are traded (after eligibility check)
+# Leave unset to trade everything not blacklisted
+SYMBOLS_WHITELIST=DOGE,NEAR,SUI,LINK
+```
+
+The default blacklist in `config.py` excludes:
+- Large-caps (BTC, ETH, SOL, XRP, ADA, AVAX) — too efficient, spreads too thin after TDS
+- Meme coins (SHIB, PEPE, BONK) — ultra-thin books, VWAP degrades rapidly
+- Stablecoins (USDC, BUSD, DAI) — not arb-eligible by nature
+
+`config.SYMBOLS` is kept as a fallback only for `USE_REST_FALLBACK=1` (offline / no live discovery).
+
+### Exposure limits
+
+```python
+MAX_EXPOSURES = {
+    "INR":  Decimal("25000"),   # max INR notional per cycle
+    "USDT": Decimal("250"),     # max USDT notional per cycle
+}
+```
+
+### Shadow portfolio
+
+```python
+SHADOW_PORTFOLIO_TOTAL_INR = Decimal("1000000")  # ₹10 lakh starting portfolio
+SHADOW_INR_RESERVE_PCT     = Decimal("0.20")     # 20% kept as INR
+SHADOW_USDT_RESERVE_PCT    = Decimal("0.10")     # 10% kept as USDT
+# Remainder distributed equally across symbols unless SHADOW_TOKEN_WEIGHTS is set
+```
+
+---
+
+## Dashboard
+
+Start with `python dashboard.py`, then open `http://localhost:8080`.
+
+Per-symbol cards show:
+- Best net spread (after fees + TDS) and the path that produces it
+- Direction (INR-start / token-start) and logical case label
+- Shadow P&L sparkline
+- Recent opportunity and execution events
+
+Click any card for a modal with full depth view (all 3 books), shadow balance breakdown, and P&L history chart.
+
+---
+
+## Project Structure
+
+```
+.
+├── main.py                      # CLI entry point (wiring only)
+├── dashboard.py                 # aiohttp web server + SSE stream
+├── api_client.py                # CSK REST client (auth, depth, orders, balances)
+├── config.py                    # all tunables (fees, symbols, exposure caps)
+├── slack_notifier.py            # Slack webhook alerts with cooldown
+├── requirements.txt
+├── core/
+│   ├── models.py                # Depth, TriBook, PathResult, TriIntent (Decimal)
+│   └── protocol.py              # ExchangeAdapter Protocol
+├── feeds/
+│   ├── binance_depth_ws.py      # Binance @depth20@100ms WebSocket feed
+│   └── csk_public_ws.py         # CSK socket.io DEPTH_UPDATE feed
+├── strategy/
+│   ├── tri_ranker.py            # stateless 4-path VWAP ranker
+│   ├── shadow_executor.py       # paper portfolio simulator
+│   ├── tri_executor.py          # real 3-leg sequential order placement
+│   ├── order_poller.py          # 1Hz/10Hz REST fill detection
+│   └── tri_engine.py            # orchestration: feeds + tick loop + watchdog
+├── scripts/
+│   └── list_pairs.py            # symbol discovery tool
+└── static/
+    └── index.html               # SSE dashboard UI
+```
+
+---
+
+## Safety Notes
+
+- Always run shadow mode first and validate net P&L before enabling real execution.
+- Never set `EXECUTION_MODE=real` without reviewing the order endpoint paths in `api_client.py` against your CSK API documentation — field names may need adjustment for your account tier.
+- Partial positions from timed-out legs are not automatically unwound. Monitor logs whenever real mode is active.
+- Never commit `COINSWITCH_SECRET_KEY` to version control.

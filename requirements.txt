@@ -7,3 +7,6 @@ cryptography>=42.0.0
 
 # Environment variable loading
 python-dotenv>=1.0.0
+
+# CoinSwitch public WebSocket (socket.io v4)
+python-socketio[asyncio_client]>=5.0
