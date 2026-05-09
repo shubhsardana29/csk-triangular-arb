@@ -295,6 +295,8 @@ class TriEngine:
 
         # ── 3-leg opportunities ───────────────────────────────────────────────
         for symbol, (net, gross) in ranked.items():
+            if not config.THREE_LEG_ENABLED:
+                break
             if not net.opportunity or net.executable_qty <= 0:
                 continue
             if symbol in self._active_symbols:

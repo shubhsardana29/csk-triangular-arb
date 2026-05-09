@@ -107,7 +107,7 @@ async def main() -> None:
     client         = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
     ranker         = TriRanker()
     two_leg_ranker = TwoLegRanker() if config.TWO_LEG_ENABLED else None
-    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED else None
+    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED and execution_mode == "real" else None
 
     # on_settle is wired after engine creation (engine owns _on_settle).
     # We pass a lambda that will be bound to the engine instance below.
@@ -182,10 +182,10 @@ async def main() -> None:
         _settle_ref.append(engine._on_settle)
 
         log.info(
-            "Starting TriEngine — %s mode — %s execution — %d symbols  2leg=%s  rebalancer=%s",
+            "Starting TriEngine — %s mode — %s execution — %d symbols  3leg=%s  2leg=%s  rebalancer=%s",
             "REST fallback" if use_rest else "WebSocket",
             execution_mode, len(symbols),
-            config.TWO_LEG_ENABLED, config.REBALANCER_ENABLED,
+            config.THREE_LEG_ENABLED, config.TWO_LEG_ENABLED, config.REBALANCER_ENABLED,
         )
         async with notifier:
             await engine.run()

@@ -377,8 +377,8 @@ class CoinSwitchClient:
             "symbol":      f"{symbol.lower()}inr",
             "side":        side.upper(),
             "type":        "LIMIT",
-            "limitPrice":  str(price),
-            "quantity":    str(qty),
+            "limitPrice":  float(price),
+            "quantity":    float(qty),
             "exchange":    "coinswitchx",
         }
         resp = await self._post("/trade/api/v2/order", body)
@@ -399,8 +399,8 @@ class CoinSwitchClient:
             "symbol":      f"{symbol.lower()}usdt",
             "side":        side.upper(),
             "type":        "LIMIT",
-            "limitPrice":  str(price),
-            "quantity":    str(qty),
+            "limitPrice":  float(price),
+            "quantity":    float(qty),
             "exchange":    "binance",
         }
         resp = await self._post("/trade/api/v2/order", body)
@@ -421,8 +421,8 @@ class CoinSwitchClient:
             "symbol":      "usdtinr",
             "side":        side.upper(),
             "type":        "LIMIT",
-            "limitPrice":  str(price),
-            "quantity":    str(qty),
+            "limitPrice":  float(price),
+            "quantity":    float(qty),
             "exchange":    "coinswitchx",
         }
         resp = await self._post("/trade/api/v2/order", body)

@@ -73,7 +73,7 @@ Market Data (100ms)
 Strategy (10Hz tick loop)
 ├── strategy/tri_ranker.py       — stateless 4-path triangular VWAP scorer
 ├── strategy/two_leg_ranker.py   — stateless 2-leg spread scorer (INR vs Binance fair price)
-├── strategy/shadow_executor.py  — paper fills on in-memory balances (3-leg)
+├── strategy/shadow_executor.py  — paper fills on in-memory balances (3-leg + 2-leg via ShadowTwoLegExecutor)
 ├── strategy/tri_executor.py     — real 3-leg sequential limit orders + boot recovery
 ├── strategy/two_leg_executor.py — real 2-leg orders with cost-floor repricing
 ├── strategy/tri_rebalancer.py   — passive maker USDT/INR restorer
@@ -110,7 +110,7 @@ All financial arithmetic uses `Decimal` — no float drift. Strategy code never 
 | **Cost floor (2-leg)** | Leg 2 SELL never placed below `buy_avg × (1 + fee + TDS + safety)` |
 | **Leg timeout** | Any leg not filled within 30s is cancelled; partial proceeds continue if available |
 | **Stuck alert** | If Leg 2 (2-leg) is resting at the cost floor for >60s, a warning is logged |
-| **Rebalancer** | Passive maker BUY on USDT/INR when USDT share drops below 20% of portfolio |
+| **Rebalancer** | Passive maker BUY on USDT/INR when USDT share drops below 20% of portfolio; 30s cooldown after failed placement to prevent API hammering |
 
 ---
 
@@ -153,8 +153,9 @@ SYMBOLS_BLACKLIST=BTC,ETH,SOL,XRP,ADA,AVAX,SHIB,PEPE,BONK,USDC,BUSD,DAI
 # EXECUTION_MODE=real     ← places real limit orders on CSK
 
 # Strategy switches
+THREE_LEG_ENABLED=false       # run 3-leg triangular arb (default false — 2-leg only)
 TWO_LEG_ENABLED=true          # run 2-leg spread arb alongside 3-leg
-REBALANCER_ENABLED=true       # maintain USDT balance passively
+REBALANCER_ENABLED=true       # maintain USDT balance passively (only active in real mode)
 REBALANCER_USDT_FLOOR_PCT=0.20  # trigger rebalance below 20% USDT share
 REBALANCER_USDT_TARGET_PCT=0.35 # restore to 35%
 TWO_LEG_MIN_SPREAD_PCT=0.015    # minimum spread for 2-leg opportunity
@@ -215,7 +216,19 @@ Per-symbol cards show:
 
 ---
 
-#### Option 4 — Real order execution (live trading)
+#### Option 4 — Both strategies, shadow mode
+
+Run 3-leg and 2-leg simultaneously in paper mode. 3-leg is off by default; enable it explicitly.
+
+```bash
+THREE_LEG_ENABLED=true python3 main.py
+```
+
+Both `ShadowExecutor` (3-leg) and `ShadowTwoLegExecutor` (2-leg) share the same paper portfolio. The position lock ensures only one trade per symbol runs at a time regardless of strategy.
+
+---
+
+#### Option 5 — Real order execution (live trading)
 
 Places real limit orders. Only enable after confirming consistently positive shadow P&L over several weeks.
 
@@ -237,9 +250,10 @@ What happens when an opportunity is detected:
 | Option | Command | Data | Executes | Use when |
 |---|---|---|---|---|
 | 1 | `USE_REST_FALLBACK=1 python3 main.py` | REST 1.5s | Paper | First test, offline dev |
-| 2 | `python3 main.py` | WS 100ms | Paper | Ongoing monitoring |
-| 3 | `python3 dashboard.py` | WS 100ms | Paper | Monitoring with UI |
-| 4 | `EXECUTION_MODE=real python3 main.py` | WS 100ms | Real orders | Live trading |
+| 2 | `python3 main.py` | WS 100ms | Paper | 2-leg only (default) |
+| 3 | `python3 dashboard.py` | WS 100ms | Paper | 2-leg only with UI |
+| 4 | `THREE_LEG_ENABLED=true python3 main.py` | WS 100ms | Paper | Both strategies |
+| 5 | `EXECUTION_MODE=real python3 main.py` | WS 100ms | Real orders | Live trading |
 
 ---
 

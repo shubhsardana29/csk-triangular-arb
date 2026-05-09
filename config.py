@@ -85,6 +85,8 @@ DEFAULT_INR_EXPOSURE = Decimal(os.getenv("DEFAULT_INR_EXPOSURE", "25000"))
 ARBITRAGE_BASE_RETURN = Decimal("1")
 ARBITRAGE_MIN_PROFIT_THRESHOLD = Decimal(os.getenv("ARBITRAGE_MIN_PROFIT_THRESHOLD", "0.0001"))
 
+# Strategy switches
+THREE_LEG_ENABLED = os.getenv("THREE_LEG_ENABLED", "false").lower() in {"1", "true", "yes"}
 # 2-Leg Arb
 TWO_LEG_ENABLED = os.getenv("TWO_LEG_ENABLED", "true").lower() in {"1", "true", "yes"}
 # Reprice Leg 2 SELL if market moved more than this fraction

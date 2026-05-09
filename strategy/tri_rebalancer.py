@@ -31,12 +31,15 @@ _ONE  = Decimal(1)
 class TriRebalancer:
     """Maintains USDT balance via passive maker orders on USDT/INR."""
 
+    RETRY_COOLDOWN_S = 30.0   # wait this long after a failed placement before retrying
+
     def __init__(self, client) -> None:
         self._client    = client
         self._oid: Optional[str] = None       # active rebalance order id
         self._last_price: Decimal = _ZERO     # price of the resting order
         self._last_qty: Decimal   = _ZERO
         self._placed_at: float    = 0.0
+        self._last_fail_ts: float = 0.0       # timestamp of last failed placement
 
     async def on_tick(
         self,
@@ -90,6 +93,10 @@ class TriRebalancer:
                 return  # order is still competitive, leave it
             await self._cancel_resting()
 
+        # Don't hammer the API after a failed placement — wait for cooldown.
+        if time() - self._last_fail_ts < self.RETRY_COOLDOWN_S:
+            return
+
         await self._place(bid_price, buy_qty)
 
     async def _place(self, price: Decimal, qty: Decimal) -> None:
@@ -103,7 +110,8 @@ class TriRebalancer:
                 self._placed_at  = time()
                 log.info("[rebalancer] resting order %s", oid)
             else:
-                log.warning("[rebalancer] place_usdtinr_order returned None")
+                log.warning("[rebalancer] place_usdtinr_order returned None — cooling down %ds", int(self.RETRY_COOLDOWN_S))
+                self._last_fail_ts = time()
         except Exception:
             log.exception("[rebalancer] failed to place order")
 

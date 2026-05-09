@@ -269,7 +269,7 @@ async def market_loop(app):
     client         = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
     ranker         = TriRanker()
     two_leg_ranker = TwoLegRanker() if config.TWO_LEG_ENABLED else None
-    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED else None
+    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED and execution_mode == "real" else None
 
     _settle_ref: list = []
 
