@@ -95,6 +95,19 @@ REPRICE_THRESHOLD_PCT = Decimal(os.getenv("REPRICE_THRESHOLD_PCT", "0.0005"))  #
 TWO_LEG_MIN_SPREAD_PCT = Decimal(os.getenv("TWO_LEG_MIN_SPREAD_PCT", "0.015"))  # 1.5%
 STUCK_ALERT_AFTER_S = float(os.getenv("STUCK_ALERT_AFTER_S", "60"))
 
+# n8n / Webhook integration
+# Set N8N_WEBHOOK_URL to the webhook trigger URL from your n8n workflow.
+# All events are posted as JSON: {"event": "<type>", ...fields}
+N8N_WEBHOOK_URL     = os.getenv("N8N_WEBHOOK_URL", "").strip()
+N8N_WEBHOOK_ENABLED = os.getenv("N8N_WEBHOOK_ENABLED", "false").lower() in {"1", "true", "yes"}
+
+# Control API — allows n8n (or curl) to change strategy params at runtime.
+# Binds to localhost only; never exposed to the network.
+CONTROL_API_ENABLED = os.getenv("CONTROL_API_ENABLED", "false").lower() in {"1", "true", "yes"}
+CONTROL_API_HOST    = os.getenv("CONTROL_API_HOST", "127.0.0.1")
+CONTROL_API_PORT    = int(os.getenv("CONTROL_API_PORT", "8765"))
+CONTROL_API_SECRET  = os.getenv("CONTROL_API_SECRET", "")
+
 # Rebalancer
 REBALANCER_ENABLED = os.getenv("REBALANCER_ENABLED", "true").lower() in {"1", "true", "yes"}
 REBALANCER_USDT_FLOOR_PCT = Decimal(os.getenv("REBALANCER_USDT_FLOOR_PCT", "0.20"))
@@ -192,3 +205,8 @@ def log_config() -> None:
         SHADOW_USDT_RESERVE_PCT * 100,
     )
     log.info("Slack Alerts: %s", "On" if SLACK_WEBHOOK_URL and SLACK_ALERTS_ENABLED else "Off")
+    log.info(
+        "n8n Webhook: %s  Control API: %s",
+        f"On ({N8N_WEBHOOK_URL})" if N8N_WEBHOOK_ENABLED and N8N_WEBHOOK_URL else "Off",
+        f"On (:{CONTROL_API_PORT})" if CONTROL_API_ENABLED else "Off",
+    )

@@ -358,6 +358,11 @@ class TriEngine:
                     float(two_result.spread_pct) * 100,
                     float(two_result.profit_pct) * 100,
                 )
+                if self._on_opportunity is not None:
+                    try:
+                        await self._on_opportunity(symbol, two_result, two_result, result)
+                    except Exception:
+                        log.exception("[engine] on_opportunity raised for 2-leg %s", symbol)
 
         # ── on_tick callback ─────────────────────────────────────────────────
         if self._on_tick is not None:

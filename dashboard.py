@@ -1,8 +1,9 @@
 import asyncio
+import collections
 import json
 import logging
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Union
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp_sse import sse_response
@@ -88,9 +89,11 @@ def _path_to_dict(path: PathResult) -> dict:
 SSE_PUSH_INTERVAL_S = 0.5   # push to browser at 2 Hz regardless of engine tick rate
 
 class AppState:
+    _RECENT_TRADES_MAX = 10   # rolling window of trades per symbol
+
     def __init__(self):
         self.data = {
-            "symbols": {}, # symbol -> latest data
+            "symbols": {},
             "shadow_inventory": {},
             "recent_events": {},
             "cycle_count": 0,
@@ -99,11 +102,11 @@ class AppState:
         }
         self.data_condition = None
         self._previous_symbols = {}
-        self._recent_events = {}
-        self._last_execution = {}
-        self._cumulative_pnl = {}
-        self._pnl_history = {}
-        self._last_push_ts: float = 0.0   # throttle SSE pushes
+        self._recent_events: dict[str, list] = {}
+        self._recent_trades: dict[str, collections.deque] = {}
+        self._cumulative_pnl: dict[str, float] = {}
+        self._pnl_history: dict[str, list] = {}
+        self._last_push_ts: float = 0.0
 
     def _push_event(self, symbol: str, level: str, title: str, detail: str):
         # Keep only a short rolling event feed per symbol for the modal UI.
@@ -116,27 +119,42 @@ class AppState:
         })
         self._recent_events[symbol] = events[:8]
 
-    def record_execution(self, symbol: str, net: PathResult, gross: PathResult, result: dict):
-        inr_var = float(result.get("inr_variance", 0))
-        sym_var = float(result.get("symbol_variance", 0))
+    def record_execution(self, symbol: str, net: Union[PathResult, TwoLegResult], result: dict):
+        inr_var   = float(result.get("inr_variance", 0))
+        sym_var   = float(result.get("symbol_variance", 0))
+        leg_label = getattr(net, "logical_case_label", None) or net.direction
+        inv_mode  = getattr(net, "inventory_mode", "2-leg")
+        is_2leg   = isinstance(net, TwoLegResult)
+
         self._cumulative_pnl[symbol] = self._cumulative_pnl.get(symbol, 0.0) + inr_var
-        self._last_execution[symbol] = {
+
+        trade = {
             "timestamp":           time.time(),
+            "leg":                 "2-leg" if is_2leg else "3-leg",
             "direction":           net.direction,
-            "logical_case_label":  net.logical_case_label,
-            "inventory_mode":      net.inventory_mode,
+            "logical_case_label":  leg_label,
+            "inventory_mode":      inv_mode,
             "profit_pct":          float(net.profit_pct),
             "expected_profit_inr": float(net.expected_profit_inr),
             "symbol_variance":     sym_var,
             "inr_variance":        inr_var,
             "cumulative_inr_pnl":  self._cumulative_pnl[symbol],
-            "balances":            result.get("result_balances", {}).copy(),
+            "balances":            {
+                k: float(v) for k, v in result.get("result_balances", {}).items()
+                if k in (symbol, "INR", "USDT")
+            },
         }
+
+        deque = self._recent_trades.setdefault(
+            symbol, collections.deque(maxlen=self._RECENT_TRADES_MAX)
+        )
+        deque.appendleft(trade)
+
         self._push_event(
             symbol,
             "good",
-            "Shadow trade executed",
-            f"INR Δ {inr_var:+.2f} | {symbol} Δ {sym_var:+.6f}",
+            f"Shadow {'2-leg' if is_2leg else '3-leg'} trade",
+            f"INR Δ {inr_var:+.2f}  {symbol} Δ {sym_var:+.6f}  cumulative {self._cumulative_pnl[symbol]:+.2f}",
         )
 
     async def update(self, symbol_data: dict, cycle: int, latency: float, shadow_inventory: dict):
@@ -169,10 +187,12 @@ class AppState:
                     previous_net.get("reason", "Spread moved below threshold")
                 )
 
-            payload["last_execution"] = self._last_execution.get(symbol)
+            trades = list(self._recent_trades.get(symbol, []))
+            payload["recent_trades"]       = trades
+            payload["last_execution"]      = trades[0] if trades else None  # backward compat
+            payload["trade_count"]         = len(trades)
             payload["cumulative_shadow_pnl"] = self._cumulative_pnl.get(symbol, 0.0)
 
-            # Persist a rolling per-symbol P&L series for the dashboard chart.
             pnl_series = self._pnl_history.setdefault(symbol, [])
             pnl_series.append(self._cumulative_pnl.get(symbol, 0.0))
             self._pnl_history[symbol] = pnl_series[-60:]
@@ -295,8 +315,8 @@ async def market_loop(app):
             on_settle=on_settle,
         ) if config.TWO_LEG_ENABLED else None
 
-    async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
-        app_state.record_execution(symbol, net, gross, result)
+    async def on_opportunity(symbol: str, net: Union[PathResult, TwoLegResult], gross, result: dict) -> None:
+        app_state.record_execution(symbol, net, result)
 
     async def on_tick(
         tri_books: dict[str, TriBook],

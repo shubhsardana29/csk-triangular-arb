@@ -141,8 +141,9 @@ class TwoLegRanker:
             max_qty = balance / buy_price if buy_price > _ZERO else _ZERO
             executable = min(qty, max_qty)
 
-        # Opportunity gate.
-        if profit_pct < self.min_spread:
+        # Opportunity gate — read from config live so ControlAPI changes take effect immediately.
+        min_spread = config.TWO_LEG_MIN_SPREAD_PCT
+        if profit_pct < min_spread:
             return TwoLegResult(
                 symbol=symbol, direction=direction,
                 buy_venue=buy_venue, sell_venue=sell_venue,

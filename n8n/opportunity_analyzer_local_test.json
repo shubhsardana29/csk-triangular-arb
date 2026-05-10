@@ -1,0 +1,170 @@
+{
+  "name": "Arb - Opportunity Analyzer (LOCAL TEST - no Claude/Slack keys needed)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "arb-opportunity",
+        "options": {}
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000001",
+      "name": "Bot Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "c3d4e5f6-0003-4000-8000-000000000099"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter: only process 'opportunity' events.\n// n8n v2 webhook wraps the POST body under .body — handle both layouts.\nconst raw  = $input.first().json;\nconst item = raw.body || raw;\n\nif (item.event !== 'opportunity') {\n  return [];\n}\n\nconst profitPct = parseFloat(item.profit_pct) || 0;\nconst inrDelta  = parseFloat(item.inr_delta)  || 0;\n\nreturn [{\n  json: {\n    event: item,\n    profitPct,\n    inrDelta,\n    // claudeRequest omitted — Mock Claude node below doesn't need it\n  }\n}];"
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000002",
+      "name": "Filter and Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── MOCK CLAUDE (swap this node for the real HTTP Request when you have an API key) ──\n//\n// Logic mirrors what Claude would reason:\n//   profit > threshold × 1.5  AND  > 2%  → lower (bot is too conservative)\n//   profit < threshold × 1.05 AND  > 0   → raise (barely cleared the bar)\n//   everything else                       → hold\n//\nconst prev = $input.first().json;\nconst profitPct       = prev.profitPct || 0;\nconst currentThreshold = parseFloat(prev.event?.min_spread_pct || 0.015);\n\nlet action, newThreshold, reason;\n\nif (profitPct > currentThreshold * 1.5 && profitPct > 0.02) {\n  action       = 'lower';\n  newThreshold = Math.max(0.012, Math.round(currentThreshold * 0.9 * 1000) / 1000);\n  reason       = `Profit ${(profitPct * 100).toFixed(2)}% is well above threshold — room to be more aggressive`;\n} else if (profitPct > 0 && profitPct < currentThreshold * 1.05) {\n  action       = 'raise';\n  newThreshold = Math.min(0.05, Math.round(currentThreshold * 1.1 * 1000) / 1000);\n  reason       = `Profit barely cleared the bar — market thinner than expected, tighten up`;\n} else {\n  action       = 'hold';\n  newThreshold = currentThreshold;\n  reason       = profitPct <= 0\n    ? `Trade had no profit — do not adjust threshold based on bad trade`\n    : `Profit in expected range — no adjustment needed`;\n}\n\n// Return in Claude API response format so Parse node works unchanged when you swap in the real node.\nreturn [{\n  json: {\n    content: [{\n      type: 'text',\n      text: JSON.stringify({ action, new_threshold: newThreshold, reason })\n    }]\n  }\n}];"
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000003",
+      "name": "Mock Claude (Local Test)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse the (mock) Claude response and validate.\nconst claudeBody = $input.first().json;\nconst prev       = $('Filter and Build Prompt').first().json;\n\nlet action = 'hold';\nlet newThreshold = null;\nlet reason = 'Parse error';\n\ntry {\n  const text = claudeBody.content?.[0]?.text || '';\n  const cleaned = text.replace(/```json\\n?/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n\n  action       = parsed.action || 'hold';\n  newThreshold = parseFloat(parsed.new_threshold);\n  reason       = parsed.reason || '';\n\n  if (!['lower', 'raise', 'hold'].includes(action)) action = 'hold';\n  if (isNaN(newThreshold) || newThreshold < 0.012 || newThreshold > 0.05) {\n    action = 'hold';\n    reason = `Rejected: threshold ${newThreshold} out of allowed range [0.012, 0.05]`;\n  }\n} catch (e) {\n  action = 'hold';\n  reason = `JSON parse failed: ${e.message}`;\n}\n\nconsole.log(`[parse] action=${action} new_threshold=${newThreshold} reason=${reason}`);\n\nreturn [{\n  json: {\n    action,\n    newThreshold,\n    reason,\n    event: prev.event,\n    profitPct: prev.profitPct,\n    inrDelta: prev.inrDelta\n  }\n}];"
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000004",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-0003-0001",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "hold",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000005",
+      "name": "Should Adjust?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8765/control",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Control-Secret",
+              "value": "test-secret"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ min_spread_pct: $json.newThreshold }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000006",
+      "name": "Update Bot Config",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Replaces the Slack node for local testing ──\n// In production: swap this for an HTTP Request node pointing at your Slack webhook.\n// All results are visible in the n8n Execution Log (left sidebar → Executions).\nconst prev = $('Parse Claude Response').first().json;\nconst botReply = $input.first().json;\n\nconst msg = [\n  `✅ THRESHOLD CHANGED`,\n  `Trade:     ${prev.event?.symbol} ${prev.event?.direction}`,\n  `Profit:    ${(prev.profitPct * 100).toFixed(3)}%   INR Δ ${prev.inrDelta >= 0 ? '+' : ''}${prev.inrDelta.toFixed(2)}`,\n  `Action:    ${prev.action.toUpperCase()}`,\n  `Applied:   ${(botReply.applied || []).join(', ')}`,\n  `Reason:    ${prev.reason}`,\n].join('\\n');\n\nconsole.log(msg);\nreturn [{ json: { message: msg, applied: botReply.applied, action: prev.action } }];"
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000007",
+      "name": "Log - Threshold Changed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1560, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ── Replaces the Slack node for local testing ──\nconst data = $input.first().json;\n\nconst msg = [\n  `ℹ️  HOLD — no config change`,\n  `Trade:   ${data.event?.symbol} ${data.event?.direction}`,\n  `Profit:  ${(data.profitPct * 100).toFixed(3)}%   INR Δ ${data.inrDelta >= 0 ? '+' : ''}${data.inrDelta.toFixed(2)}`,\n  `Reason:  ${data.reason}`,\n].join('\\n');\n\nconsole.log(msg);\nreturn [{ json: { message: msg, action: 'hold' } }];"
+      },
+      "id": "c3d4e5f6-0003-4000-8000-000000000008",
+      "name": "Log - Hold",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 420]
+    }
+  ],
+  "connections": {
+    "Bot Webhook": {
+      "main": [
+        [{ "node": "Filter and Build Prompt", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter and Build Prompt": {
+      "main": [
+        [{ "node": "Mock Claude (Local Test)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mock Claude (Local Test)": {
+      "main": [
+        [{ "node": "Parse Claude Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [{ "node": "Should Adjust?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should Adjust?": {
+      "main": [
+        [{ "node": "Update Bot Config", "type": "main", "index": 0 }],
+        [{ "node": "Log - Hold", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Bot Config": {
+      "main": [
+        [{ "node": "Log - Threshold Changed", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "active": false,
+  "versionId": "c3d4e5f6-0003-4000-8000-000000000000",
+  "id": "arb-opportunity-analyzer-test",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "local"
+  },
+  "tags": [{ "name": "arb-bot" }, { "name": "local-test" }]
+}

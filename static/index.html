@@ -612,6 +612,11 @@
             <div class="label-tag">Recent Activity</div>
             <div class="event-feed" id="mEvents"></div>
           </div>
+
+          <div>
+            <div class="label-tag">Recent Trades</div>
+            <div class="event-feed" id="mRecentTrades"></div>
+          </div>
         </div>
 
         <div class="depth-view">
@@ -855,7 +860,8 @@
       renderDepth('mDepth2', net.depth[`${symbol}/USDT`] || {bids:[], asks:[]});
       renderDepth('mDepth3', net.depth['USDT/INR'] || {bids:[], asks:[]});
       renderEvents('mEvents', events, net);
-      
+      renderRecentTrades('mRecentTrades', data.recent_trades || []);
+
       renderModalChart(symbol);
       renderPnlChart(symbol, data.shadow_pnl_history || []);
     }
@@ -997,6 +1003,29 @@
           <div class="event-detail">${event.detail}</div>
         </div>
       `).join('');
+    }
+
+    function renderRecentTrades(id, trades) {
+      const el = document.getElementById(id);
+      if (!trades || !trades.length) {
+        el.innerHTML = `<div class="event-item info"><div class="event-head"><div class="event-title">No trades yet</div><div class="event-time">--</div></div><div class="event-detail">Trades will appear here once the bot executes</div></div>`;
+        return;
+      }
+      el.innerHTML = trades.map(t => {
+        const pnl      = t.inr_variance || 0;
+        const cumPnl   = t.cumulative_inr_pnl || 0;
+        const level    = pnl >= 0 ? 'good' : 'warn';
+        const legBadge = t.leg === '2-leg' ? ' · 2L' : ' · 3L';
+        return `
+          <div class="event-item ${level}">
+            <div class="event-head">
+              <div class="event-title">${t.direction || '--'}${legBadge} · ${(t.profit_pct * 100).toFixed(3)}%</div>
+              <div class="event-time">${relativeTime(t.timestamp)}</div>
+            </div>
+            <div class="event-detail">INR Δ ${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)} · cumulative ${cumPnl >= 0 ? '+' : ''}${cumPnl.toFixed(2)}</div>
+          </div>
+        `;
+      }).join('');
     }
 
     function formatCompact(value) {

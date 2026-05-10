@@ -1,0 +1,205 @@
+{
+  "name": "Arb - Opportunity Analyzer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "arb-opportunity",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Bot Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "a1b2c3d4-0001-4000-8000-000000000099"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Filter: only process 'opportunity' events with a real trade result.\n// n8n v2 webhook wraps the POST body under .body — handle both layouts.\nconst raw  = $input.first().json;\nconst item = raw.body || raw;\n\nif (item.event !== 'opportunity') {\n  return [];\n}\n\nconst profitPct = parseFloat(item.profit_pct) || 0;\nconst inrDelta  = parseFloat(item.inr_delta)  || 0;\n\n// Build the Claude request body here so the HTTP node stays simple.\nconst prompt = `You are monitoring an INR/USDT spread arbitrage bot on CoinSwitch (India).\n\nContext:\n- Cost structure: 1% TDS (tax deducted at source) + ~0.04% taker fee per leg\n- Breakeven spread is approximately 1.08% net\n- Current minimum spread threshold: ${parseFloat(item.min_spread_pct || 0.015) * 100}%\n- A trade just executed: ${item.symbol} direction=${item.direction}\n  Net profit: ${(profitPct * 100).toFixed(3)}%\n  INR P&L this trade: ${inrDelta >= 0 ? '+' : ''}${inrDelta.toFixed(2)}\n\nYour job: decide if the threshold should be adjusted.\nRules:\n- Suggest \"lower\" only if profit_pct > current_threshold * 1.5 AND profit_pct > 0.02\n  (meaning the bot is being too conservative — real edge exists well above the bar)\n- Suggest \"raise\" if profit_pct < current_threshold * 1.05\n  (trade barely cleared the bar — market may be thinner than expected)\n- Suggest \"hold\" in all other cases\n- Never recommend new_threshold below 0.012 (1.2%) — below cost floor\n- Never recommend new_threshold above 0.05 (5%) — too restrictive\n\nRespond ONLY with valid JSON, no extra text:\n{\"action\": \"lower\"|\"raise\"|\"hold\", \"new_threshold\": <float>, \"reason\": \"<one sentence>\"}`;\n\nreturn [{\n  json: {\n    event: item,\n    profitPct,\n    inrDelta,\n    claudeRequest: {\n      model: 'claude-haiku-4-5-20251001',\n      max_tokens: 200,\n      messages: [{ role: 'user', content: prompt }]\n    }\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000002",
+      "name": "Filter and Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "YOUR_ANTHROPIC_API_KEY"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.claudeRequest) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000003",
+      "name": "Ask Claude",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Claude's response and validate the action before applying it.\nconst claudeBody = $input.first().json;\nconst prev       = $('Filter and Build Prompt').first().json;\n\nlet action = 'hold';\nlet newThreshold = null;\nlet reason = 'Parse error';\n\ntry {\n  const text = claudeBody.content?.[0]?.text || '';\n  // Claude sometimes wraps JSON in markdown code fences — strip them.\n  const cleaned = text.replace(/```json\\n?/g, '').replace(/```/g, '').trim();\n  const parsed = JSON.parse(cleaned);\n\n  action       = parsed.action || 'hold';\n  newThreshold = parseFloat(parsed.new_threshold);\n  reason       = parsed.reason || '';\n\n  // Validate: clamp and reject nonsense values.\n  if (!['lower', 'raise', 'hold'].includes(action)) action = 'hold';\n  if (isNaN(newThreshold) || newThreshold < 0.012 || newThreshold > 0.05) {\n    action = 'hold';\n    reason = `Rejected: threshold ${newThreshold} out of allowed range [0.012, 0.05]`;\n  }\n} catch (e) {\n  action = 'hold';\n  reason = `JSON parse failed: ${e.message}`;\n}\n\nreturn [{\n  json: {\n    action,\n    newThreshold,\n    reason,\n    event: prev.event,\n    profitPct: prev.profitPct,\n    inrDelta: prev.inrDelta\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000004",
+      "name": "Parse Claude Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "loose"
+          },
+          "conditions": [
+            {
+              "id": "cond-0001-0001",
+              "leftValue": "={{ $json.action }}",
+              "rightValue": "hold",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000005",
+      "name": "Should Adjust?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8765/control",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "X-Control-Secret",
+              "value": "YOUR_CONTROL_API_SECRET"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ min_spread_pct: $json.newThreshold }) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000006",
+      "name": "Update Bot Config",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  username: 'ArbAgent',\n  text: `:robot_face: *Agent adjusted threshold*\\n*Trade:* ${$('Parse Claude Response').first().json.event.symbol} ${$('Parse Claude Response').first().json.event.direction}\\n*Profit:* ${($('Parse Claude Response').first().json.profitPct * 100).toFixed(3)}%  INR Δ ${$('Parse Claude Response').first().json.inrDelta >= 0 ? '+' : ''}${$('Parse Claude Response').first().json.inrDelta.toFixed(2)}\\n*Action:* ${$('Parse Claude Response').first().json.action.toUpperCase()} threshold → ${($json.applied?.[0] || 'n/a')}\\n*Reason:* ${$('Parse Claude Response').first().json.reason}`\n}) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000007",
+      "name": "Slack - Threshold Changed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1560, 200]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "YOUR_SLACK_WEBHOOK_URL",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({\n  username: 'ArbAgent',\n  text: `:chart_with_upwards_trend: *Trade executed — no config change*\\n*Trade:* ${$json.event.symbol} ${$json.event.direction}\\n*Profit:* ${($json.profitPct * 100).toFixed(3)}%  INR Δ ${$json.inrDelta >= 0 ? '+' : ''}${$json.inrDelta.toFixed(2)}\\n*Agent says:* ${$json.reason}`\n}) }}",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "id": "a1b2c3d4-0001-4000-8000-000000000008",
+      "name": "Slack - Trade Logged",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1340, 420]
+    }
+  ],
+  "connections": {
+    "Bot Webhook": {
+      "main": [
+        [{ "node": "Filter and Build Prompt", "type": "main", "index": 0 }]
+      ]
+    },
+    "Filter and Build Prompt": {
+      "main": [
+        [{ "node": "Ask Claude", "type": "main", "index": 0 }]
+      ]
+    },
+    "Ask Claude": {
+      "main": [
+        [{ "node": "Parse Claude Response", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Claude Response": {
+      "main": [
+        [{ "node": "Should Adjust?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should Adjust?": {
+      "main": [
+        [{ "node": "Update Bot Config", "type": "main", "index": 0 }],
+        [{ "node": "Slack - Trade Logged", "type": "main", "index": 0 }]
+      ]
+    },
+    "Update Bot Config": {
+      "main": [
+        [{ "node": "Slack - Threshold Changed", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": ""
+  },
+  "active": false,
+  "versionId": "a1b2c3d4-0001-4000-8000-000000000000",
+  "id": "arb-opportunity-analyzer",
+  "meta": {
+    "templateCredsSetupCompleted": false,
+    "instanceId": "local"
+  },
+  "tags": [{ "name": "arb-bot" }]
+}

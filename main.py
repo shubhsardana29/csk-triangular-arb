@@ -18,9 +18,11 @@ from dotenv import load_dotenv
 
 import config
 from api_client import CoinSwitchClient
+from control_api import ControlAPI
 from core.models import PathResult, TwoLegResult
 from feeds.binance_depth_ws import BinanceDepthFeed
 from feeds.csk_public_ws import CSKPublicWS
+from feeds.webhook_emitter import WebhookEmitter
 from slack_notifier import SlackNotifier
 from strategy.tri_ranker import TriRanker
 from strategy.two_leg_ranker import TwoLegRanker
@@ -42,18 +44,20 @@ def _fmt_pct(value: Decimal) -> str:
     return f"{float(value) * 100:+.4f}%"
 
 
-def _format_opportunity_alert(symbol: str, net: PathResult, gross: PathResult) -> str:
+def _format_opportunity_alert(symbol: str, net, gross) -> str:
+    leg_label = getattr(net, "logical_case_label", net.direction)
+    inv_mode  = getattr(net, "inventory_mode", "2-leg")
     return (
         f":rotating_light: Opportunity: {symbol}\n"
-        f"Case: {net.logical_case_label} ({net.inventory_mode})\n"
+        f"Case: {leg_label} ({inv_mode})\n"
         f"Route: {net.direction}\n"
-        f"Net: {_fmt_pct(net.profit_pct)}  Gross: {_fmt_pct(gross.profit_pct)}\n"
+        f"Net: {_fmt_pct(net.profit_pct)}  Gross: {_fmt_pct(getattr(gross, 'profit_pct', net.profit_pct))}\n"
         f"Start: {float(net.executable_qty):.6f} {net.base_currency}\n"
         f"Projected INR: {float(net.expected_profit_inr):+.2f}"
     )
 
 
-def _format_execution_alert(symbol: str, net: PathResult, result: dict) -> str:
+def _format_execution_alert(symbol: str, net, result: dict) -> str:
     bal = result.get("result_balances", {})
     return (
         f":white_check_mark: Shadow trade: {symbol}\n"
@@ -104,6 +108,11 @@ async def main() -> None:
         username=config.SLACK_ALERT_USERNAME,
     )
 
+    emitter = WebhookEmitter(
+        url=config.N8N_WEBHOOK_URL,
+        enabled=config.N8N_WEBHOOK_ENABLED,
+    )
+
     client         = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
     ranker         = TriRanker()
     two_leg_ranker = TwoLegRanker() if config.TWO_LEG_ENABLED else None
@@ -124,10 +133,12 @@ async def main() -> None:
         shadow_balances=executor.balances if execution_mode != "real" else None,
     )
 
-    async def on_opportunity(symbol: str, net: PathResult, gross: PathResult, result: dict) -> None:
+    async def on_opportunity(symbol: str, net, gross, result: dict) -> None:
+        path_id   = getattr(net, "path_id", 0)
+        leg_label = getattr(net, "logical_case_label", net.direction)
         log.info(
             "[%s] path=%d  %s  yield=%s  gross=%s  qty=%.6f %s  profit_inr=%+.2f",
-            symbol, net.path_id, net.logical_case_label,
+            symbol, path_id, leg_label,
             _fmt_pct(net.profit_pct), _fmt_pct(gross.profit_pct),
             float(net.executable_qty), net.base_currency,
             float(net.expected_profit_inr),
@@ -142,6 +153,19 @@ async def main() -> None:
                 _format_execution_alert(symbol, net, result),
                 key=f"exec:{symbol}:{net.direction}",
             )
+        # Fire-and-forget to n8n (if enabled) — never blocks the tick loop.
+        await emitter.emit("opportunity", {
+            "symbol":         symbol,
+            "direction":      net.direction,
+            "profit_pct":     net.profit_pct,
+            "gross_pct":      getattr(gross, "profit_pct", net.profit_pct),
+            "profit_inr":     net.expected_profit_inr,
+            "executable_qty": net.executable_qty,
+            "base_currency":  net.base_currency,
+            "path_id":        getattr(net, "path_id", 0),
+            "inr_delta":      result.get("inr_variance", Decimal(0)),
+            "min_spread_pct": float(config.TWO_LEG_MIN_SPREAD_PCT),
+        })
 
     async with client:
         if use_rest:
@@ -181,6 +205,19 @@ async def main() -> None:
         # Wire the settle callback to the engine's position-unlock method.
         _settle_ref.append(engine._on_settle)
 
+        # Start webhook emitter (no-op if N8N_WEBHOOK_ENABLED=false).
+        await emitter.start()
+
+        # Start control API (no-op if CONTROL_API_ENABLED=false).
+        if config.CONTROL_API_ENABLED:
+            control_api = ControlAPI(
+                host=config.CONTROL_API_HOST,
+                port=config.CONTROL_API_PORT,
+                secret=config.CONTROL_API_SECRET,
+                two_leg_ranker=two_leg_ranker,
+            )
+            await control_api.start()
+
         log.info(
             "Starting TriEngine — %s mode — %s execution — %d symbols  3leg=%s  2leg=%s  rebalancer=%s",
             "REST fallback" if use_rest else "WebSocket",
@@ -189,8 +226,11 @@ async def main() -> None:
             config.TWO_LEG_ENABLED,
             "enabled" if rebalancer is not None else "disabled (shadow mode)",
         )
-        async with notifier:
-            await engine.run()
+        try:
+            async with notifier:
+                await engine.run()
+        finally:
+            await emitter.close()
 
 
 if __name__ == "__main__":
