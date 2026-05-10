@@ -2,39 +2,42 @@ import asyncio
 import collections
 import json
 import logging
+import os
+import time
 from decimal import Decimal
 from typing import Optional, Union
+
 from aiohttp import web
 from aiohttp.client_exceptions import ClientConnectionResetError
 from aiohttp_sse import sse_response
-import os
-from api_client import CoinSwitchClient
+from dotenv import load_dotenv
+
 import config
+from api_client import CoinSwitchClient
 from core.models import Depth, PathResult, TriBook, TwoLegResult
 from feeds.binance_depth_ws import BinanceDepthFeed
 from feeds.csk_public_ws import CSKPublicWS
-from strategy.tri_ranker import TriRanker
-from strategy.two_leg_ranker import TwoLegRanker
 from strategy.shadow_executor import ShadowExecutor, ShadowTwoLegExecutor
 from strategy.tri_engine import TriEngine
+from strategy.tri_ranker import TriRanker
 from strategy.tri_rebalancer import TriRebalancer
-from dotenv import load_dotenv
-import time
+from strategy.two_leg_ranker import TwoLegRanker
 
 load_dotenv()
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 config.log_config()
 
 
 class DecimalEncoder(json.JSONEncoder):
     """Serialize Decimal as float at the JSON boundary. TriBook/Depth are not JSON-serializable."""
+
     def default(self, obj):
         if isinstance(obj, Decimal):
             return float(obj)
         if isinstance(obj, (TriBook, Depth)):
-            return None   # strip depth objects — dashboard doesn't render raw books
+            return None  # strip depth objects — dashboard doesn't render raw books
         return super().default(obj)
 
 
@@ -55,15 +58,15 @@ def _best_mark_price(depth: Optional[Depth]) -> float:
 
 def _two_leg_to_dict(r: TwoLegResult) -> dict:
     return {
-        "opportunity":         r.opportunity,
-        "reason":              r.reason,
-        "direction":           r.direction,
-        "buy_venue":           r.buy_venue,
-        "sell_venue":          r.sell_venue,
-        "spread_pct":          r.spread_pct,
-        "profit_pct":          r.profit_pct,
-        "executable_qty":      r.executable_qty,
-        "base_currency":       r.base_currency,
+        "opportunity": r.opportunity,
+        "reason": r.reason,
+        "direction": r.direction,
+        "buy_venue": r.buy_venue,
+        "sell_venue": r.sell_venue,
+        "spread_pct": r.spread_pct,
+        "profit_pct": r.profit_pct,
+        "executable_qty": r.executable_qty,
+        "base_currency": r.base_currency,
         "expected_profit_inr": r.expected_profit_inr,
     }
 
@@ -71,34 +74,36 @@ def _two_leg_to_dict(r: TwoLegResult) -> dict:
 def _path_to_dict(path: PathResult) -> dict:
     """Convert a PathResult to a JSON-compatible dict for the dashboard payload."""
     return {
-        "opportunity":         path.opportunity,
-        "reason":              path.reason,
-        "direction":           path.direction,
-        "logical_case":        path.logical_case,
-        "logical_case_label":  path.logical_case_label,
-        "inventory_mode":      path.inventory_mode,
-        "thesis":              path.thesis,
-        "path_id":             path.path_id,
-        "executable_qty":      path.executable_qty,
-        "base_currency":       path.base_currency,
+        "opportunity": path.opportunity,
+        "reason": path.reason,
+        "direction": path.direction,
+        "logical_case": path.logical_case,
+        "logical_case_label": path.logical_case_label,
+        "inventory_mode": path.inventory_mode,
+        "thesis": path.thesis,
+        "path_id": path.path_id,
+        "executable_qty": path.executable_qty,
+        "base_currency": path.base_currency,
         "expected_profit_inr": path.expected_profit_inr,
-        "profit_pct":          path.profit_pct,
-        "yield_ratio":         path.yield_ratio,
+        "profit_pct": path.profit_pct,
+        "yield_ratio": path.yield_ratio,
     }
 
-SSE_PUSH_INTERVAL_S = 0.5   # push to browser at 2 Hz regardless of engine tick rate
+
+SSE_PUSH_INTERVAL_S = 0.5  # push to browser at 2 Hz regardless of engine tick rate
+
 
 class AppState:
     _RECENT_TRADES_MAX = 10   # rolling window of trades per symbol
 
     def __init__(self):
         self.data = {
-            "symbols": {},
+            "symbols": {},  # symbol -> latest data
             "shadow_inventory": {},
             "recent_events": {},
             "cycle_count": 0,
             "status": "Initializing...",
-            "last_update": 0
+            "last_update": 0,
         }
         self.data_condition = None
         self._previous_symbols = {}
@@ -111,12 +116,15 @@ class AppState:
     def _push_event(self, symbol: str, level: str, title: str, detail: str):
         # Keep only a short rolling event feed per symbol for the modal UI.
         events = self._recent_events.setdefault(symbol, [])
-        events.insert(0, {
-            "level": level,
-            "title": title,
-            "detail": detail,
-            "timestamp": time.time()
-        })
+        events.insert(
+            0,
+            {
+                "level": level,
+                "title": title,
+                "detail": detail,
+                "timestamp": time.time(),
+            },
+        )
         self._recent_events[symbol] = events[:8]
 
     def record_execution(self, symbol: str, net: Union[PathResult, TwoLegResult], result: dict):
@@ -157,7 +165,9 @@ class AppState:
             f"INR Δ {inr_var:+.2f}  {symbol} Δ {sym_var:+.6f}  cumulative {self._cumulative_pnl[symbol]:+.2f}",
         )
 
-    async def update(self, symbol_data: dict, cycle: int, latency: float, shadow_inventory: dict):
+    async def update(
+        self, symbol_data: dict, cycle: int, latency: float, shadow_inventory: dict
+    ):
         for symbol, payload in symbol_data.items():
             current_net = payload.get("net", {})
             previous_net = self._previous_symbols.get(symbol, {}).get("net", {})
@@ -170,21 +180,25 @@ class AppState:
                     symbol,
                     "good",
                     "Opportunity detected",
-                    f"{_format_pct(current_net.get('profit_pct', 0))} via {current_net.get('logical_case_label', 'Unknown case')}"
+                    f"{_format_pct(current_net.get('profit_pct', 0))} via {current_net.get('logical_case_label', 'Unknown case')}",
                 )
-            elif current_live and previous_live and current_net.get("direction") != previous_net.get("direction"):
+            elif (
+                current_live
+                and previous_live
+                and current_net.get("direction") != previous_net.get("direction")
+            ):
                 self._push_event(
                     symbol,
                     "info",
                     "Route changed",
-                    f"Now tracking {current_net.get('logical_case_label', 'Unknown case')} ({current_net.get('inventory_mode', 'n/a')})"
+                    f"Now tracking {current_net.get('logical_case_label', 'Unknown case')} ({current_net.get('inventory_mode', 'n/a')})",
                 )
             elif not current_live and previous_live:
                 self._push_event(
                     symbol,
                     "warn",
                     "Opportunity cleared",
-                    previous_net.get("reason", "Spread moved below threshold")
+                    previous_net.get("reason", "Spread moved below threshold"),
                 )
 
             trades = list(self._recent_trades.get(symbol, []))
@@ -216,7 +230,9 @@ class AppState:
             self.data["last_update"] = now
             self.data_condition.notify_all()
 
+
 app_state = AppState()
+
 
 async def sse_handler(request):
     async with sse_response(request) as resp:
@@ -228,13 +244,19 @@ async def sse_handler(request):
                 payload = json.dumps(app_state.data, cls=DecimalEncoder)
                 try:
                     await resp.send(payload)
-                except (ClientConnectionResetError, ConnectionResetError, asyncio.CancelledError):
+                except (
+                    ClientConnectionResetError,
+                    ConnectionResetError,
+                    asyncio.CancelledError,
+                ):
                     logger.info("SSE client disconnected")
                     break
     return resp
 
+
 async def index(request):
-    return web.FileResponse('./static/index.html')
+    return web.FileResponse("./static/index.html")
+
 
 def _build_shadow_inventory(
     balances: dict,
@@ -242,6 +264,7 @@ def _build_shadow_inventory(
 ) -> dict:
     """Assemble the shadow inventory dict for the dashboard state push."""
     from decimal import Decimal as _D
+
     zero = _D(0)
 
     positions = [
@@ -251,7 +274,8 @@ def _build_shadow_inventory(
             "mark_price_inr": _best_mark_price(
                 tri_books[symbol].s_inr if symbol in tri_books else None
             ),
-            "market_value_inr": float(balances.get(symbol, zero)) * _best_mark_price(
+            "market_value_inr": float(balances.get(symbol, zero))
+            * _best_mark_price(
                 tri_books[symbol].s_inr if symbol in tri_books else None
             ),
         }
@@ -261,17 +285,17 @@ def _build_shadow_inventory(
 
     first_book = tri_books.get(config.SYMBOLS[0]) if config.SYMBOLS else None
     usdt_mark = _best_mark_price(first_book.usdt_inr if first_book else None)
-    usdt_bal  = balances.get("USDT", zero)
+    usdt_bal = balances.get("USDT", zero)
 
     return {
-        "INR":              balances.get("INR", zero),
-        "USDT":             usdt_bal,
-        "asset_count":      len(positions),
-        "positions":        positions,
+        "INR": balances.get("INR", zero),
+        "USDT": usdt_bal,
+        "asset_count": len(positions),
+        "positions": positions,
         "usdt_mark_price_inr": usdt_mark,
-        "usdt_value_inr":   float(usdt_bal) * usdt_mark,
-        "asset_value_inr":  sum(p["market_value_inr"] for p in positions),
-        "total_value_inr":  (
+        "usdt_value_inr": float(usdt_bal) * usdt_mark,
+        "asset_value_inr": sum(p["market_value_inr"] for p in positions),
+        "total_value_inr": (
             float(balances.get("INR", zero))
             + float(usdt_bal) * usdt_mark
             + sum(p["market_value_inr"] for p in positions)
@@ -283,13 +307,17 @@ async def market_loop(app):
     # Initialize condition inside the running event loop.
     app_state.data_condition = asyncio.Condition()
 
-    use_rest       = os.getenv("USE_REST_FALLBACK", "").lower() in {"1", "true", "yes"}
+    use_rest = os.getenv("USE_REST_FALLBACK", "").lower() in {"1", "true", "yes"}
     execution_mode = os.getenv("EXECUTION_MODE", "shadow").strip().lower()
 
-    client         = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
-    ranker         = TriRanker()
+    client = CoinSwitchClient(config.COINSWITCH_API_KEY, config.COINSWITCH_SECRET_KEY)
+    ranker = TriRanker()
     two_leg_ranker = TwoLegRanker() if config.TWO_LEG_ENABLED else None
-    rebalancer     = TriRebalancer(client) if config.REBALANCER_ENABLED and execution_mode == "real" else None
+    rebalancer = (
+        TriRebalancer(client)
+        if config.REBALANCER_ENABLED and execution_mode == "real"
+        else None
+    )
 
     _settle_ref: list = []
 
@@ -300,22 +328,42 @@ async def market_loop(app):
     if execution_mode == "real":
         from strategy.tri_executor import TriExecutor
         from strategy.two_leg_executor import TwoLegExecutor
+
         logger.warning("EXECUTION_MODE=real — LIVE ORDERS will be placed on CSK")
-        executor         = TriExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
-                                       on_settle=on_settle)
-        two_leg_executor = TwoLegExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
-                                          on_settle=on_settle) if config.TWO_LEG_ENABLED else None
-    else:
-        executor         = ShadowExecutor({}, fee=config.TAKER_FEE, tds=config.TDS_RATE,
-                                          on_settle=on_settle)
-        two_leg_executor = ShadowTwoLegExecutor(
-            balances=executor.balances,
+        executor = TriExecutor(
+            client=client,
             fee=config.TAKER_FEE,
             tds=config.TDS_RATE,
             on_settle=on_settle,
-        ) if config.TWO_LEG_ENABLED else None
+        )
+        two_leg_executor = (
+            TwoLegExecutor(
+                client=client,
+                fee=config.TAKER_FEE,
+                tds=config.TDS_RATE,
+                on_settle=on_settle,
+            )
+            if config.TWO_LEG_ENABLED
+            else None
+        )
+    else:
+        executor = ShadowExecutor(
+            {}, fee=config.TAKER_FEE, tds=config.TDS_RATE, on_settle=on_settle
+        )
+        two_leg_executor = (
+            ShadowTwoLegExecutor(
+                balances=executor.balances,
+                fee=config.TAKER_FEE,
+                tds=config.TDS_RATE,
+                on_settle=on_settle,
+            )
+            if config.TWO_LEG_ENABLED
+            else None
+        )
 
-    async def on_opportunity(symbol: str, net: Union[PathResult, TwoLegResult], gross, result: dict) -> None:
+    async def on_opportunity(
+        symbol: str, net: Union[PathResult, TwoLegResult], gross, result: dict
+    ) -> None:
         app_state.record_execution(symbol, net, result)
 
     async def on_tick(
@@ -331,13 +379,13 @@ async def market_loop(app):
             balances = executor.balances
             two_leg = ranked_2l.get(symbol)
             symbol_data[symbol] = {
-                "net":   _path_to_dict(net),
+                "net": _path_to_dict(net),
                 "gross": _path_to_dict(gross),
                 "two_leg": _two_leg_to_dict(two_leg) if two_leg else None,
                 "shadow_balances": {
                     "symbol": balances.get(symbol, 0),
-                    "INR":    balances.get("INR",   0),
-                    "USDT":   balances.get("USDT",  0),
+                    "INR": balances.get("INR", 0),
+                    "USDT": balances.get("USDT", 0),
                 },
             }
         shadow_inventory = _build_shadow_inventory(executor.balances, tri_books)
@@ -346,7 +394,9 @@ async def market_loop(app):
     async with client:
         if use_rest:
             symbols = config.SYMBOLS
-            logger.info("REST mode — using fallback symbol list (%d symbols)", len(symbols))
+            logger.info(
+                "REST mode — using fallback symbol list (%d symbols)", len(symbols)
+            )
         else:
             symbols = await client.discover_symbols(
                 whitelist=config.SYMBOLS_WHITELIST,
@@ -360,7 +410,7 @@ async def market_loop(app):
             executor._symbols = [s.upper() for s in symbols]
 
         binance_feed = None if use_rest else BinanceDepthFeed(symbols)
-        csk_ws       = None if use_rest else CSKPublicWS()
+        csk_ws = None if use_rest else CSKPublicWS()
 
         engine = TriEngine(
             client=client,
@@ -378,23 +428,27 @@ async def market_loop(app):
         _settle_ref.append(engine._on_settle)
         await engine.run()
 
+
 async def start_background_tasks(app):
-    app['market_task'] = asyncio.create_task(market_loop(app))
+    app["market_task"] = asyncio.create_task(market_loop(app))
+
 
 async def cleanup_background_tasks(app):
-    app['market_task'].cancel()
-    await app['market_task']
+    app["market_task"].cancel()
+    await app["market_task"]
+
 
 def main():
     app = web.Application()
-    app.router.add_get('/', index)
-    app.router.add_get('/events', sse_handler)
-    app.router.add_static('/static/', path='./static/', name='static')
-    
+    app.router.add_get("/", index)
+    app.router.add_get("/events", sse_handler)
+    app.router.add_static("/static/", path="./static/", name="static")
+
     app.on_startup.append(start_background_tasks)
     app.on_cleanup.append(cleanup_background_tasks)
-    
-    web.run_app(app, host='0.0.0.0', port=8080)
 
-if __name__ == '__main__':
+    web.run_app(app, host="0.0.0.0", port=8080)
+
+
+if __name__ == "__main__":
     main()
