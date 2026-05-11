@@ -140,15 +140,8 @@ class TwoLegRanker:
                 f"Spread {float(abs_spread)*100:.1f}% exceeds sanity cap — illiquid book",
             )
 
-        # 2. Fill ratio — book must supply at least 50% of the target qty.
-        fill_ratio = qty / target_qty if target_qty > _ZERO else _ZERO
-        if fill_ratio < config.TWO_LEG_MIN_FILL_RATIO:
-            return self._no_opportunity(
-                symbol,
-                f"Book too thin: only {float(fill_ratio)*100:.0f}% of target qty available",
-            )
-
-        # 3. Minimum notional — trade must be worth at least ₹1,000 INR.
+        # 2. Minimum available notional — book must offer at least ₹2,000 of depth.
+        #    (fill ratio is not used — target_qty is the desired size, not the minimum viable size)
         raw_notional = qty * ref_price
         if raw_notional < config.TWO_LEG_MIN_NOTIONAL_INR:
             return self._no_opportunity(

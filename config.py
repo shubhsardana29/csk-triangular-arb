@@ -98,10 +98,8 @@ STUCK_ALERT_AFTER_S = float(os.getenv("STUCK_ALERT_AFTER_S", "60"))
 # Liquidity guards — reject symbols with stale/empty books
 # Spread above this is almost certainly a dead book, not a real opportunity (e.g. XVS 103%)
 TWO_LEG_MAX_SPREAD_SANITY = Decimal(os.getenv("TWO_LEG_MAX_SPREAD_SANITY", "0.15"))   # 15%
-# Must fill at least this fraction of target_qty from the book; below = too thin to trade
-TWO_LEG_MIN_FILL_RATIO    = Decimal(os.getenv("TWO_LEG_MIN_FILL_RATIO",    "0.5"))    # 50%
-# Minimum trade notional in INR; below = not worth the fixed costs
-TWO_LEG_MIN_NOTIONAL_INR  = Decimal(os.getenv("TWO_LEG_MIN_NOTIONAL_INR",  "1000"))   # ₹1,000
+# Book must offer at least this much notional depth for the winning direction
+TWO_LEG_MIN_NOTIONAL_INR  = Decimal(os.getenv("TWO_LEG_MIN_NOTIONAL_INR",  "2000"))   # ₹2,000
 
 # n8n / Webhook integration
 # Set N8N_WEBHOOK_URL to the webhook trigger URL from your n8n workflow.
