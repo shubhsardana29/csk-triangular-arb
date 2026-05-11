@@ -131,6 +131,31 @@ class TwoLegRanker:
         if buy_price <= _ZERO or sell_price <= _ZERO or qty <= _ZERO:
             return self._no_opportunity(symbol, "Zero price or qty")
 
+        # ── Liquidity guards ──────────────────────────────────────────────────
+        # 1. Spread sanity cap — a spread above 15% is a stale/empty book, not a real edge.
+        abs_spread = abs(spread_pct)
+        if abs_spread > config.TWO_LEG_MAX_SPREAD_SANITY:
+            return self._no_opportunity(
+                symbol,
+                f"Spread {float(abs_spread)*100:.1f}% exceeds sanity cap — illiquid book",
+            )
+
+        # 2. Fill ratio — book must supply at least 50% of the target qty.
+        fill_ratio = qty / target_qty if target_qty > _ZERO else _ZERO
+        if fill_ratio < config.TWO_LEG_MIN_FILL_RATIO:
+            return self._no_opportunity(
+                symbol,
+                f"Book too thin: only {float(fill_ratio)*100:.0f}% of target qty available",
+            )
+
+        # 3. Minimum notional — trade must be worth at least ₹1,000 INR.
+        raw_notional = qty * ref_price
+        if raw_notional < config.TWO_LEG_MIN_NOTIONAL_INR:
+            return self._no_opportunity(
+                symbol,
+                f"Notional ₹{float(raw_notional):.0f} below minimum ₹{float(config.TWO_LEG_MIN_NOTIONAL_INR):.0f}",
+            )
+
         # Balance clamp.
         if direction == "INR_CHEAP":
             balance = balances.get("INR", _ZERO)
