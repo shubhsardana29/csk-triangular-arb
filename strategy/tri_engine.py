@@ -381,7 +381,10 @@ class TriEngine:
             )
             # Show top-5 2-leg spreads so the user can see how close the market is.
             if ranked_2l:
-                top5 = sorted(ranked_2l.values(), key=lambda r: r.profit_pct, reverse=True)[:5]
+                top5 = sorted(
+                    (r for r in ranked_2l.values() if r.direction),
+                    key=lambda r: r.profit_pct, reverse=True,
+                )[:5]
                 for r in top5:
                     log.info(
                         "[2leg-best] %-10s  %s  spread=%+.3f%%  profit=%+.3f%%  threshold=%.3f%%",
