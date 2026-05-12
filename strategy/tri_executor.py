@@ -411,8 +411,15 @@ class TriExecutor:
             # Partial fill — try to continue with whatever was filled.
             partial = state.proceeds
             if partial > _ZERO and leg_num < 3:
-                log.warning("[%s] continuing with partial Leg %d proceeds=%.6f", symbol, leg_num, float(partial))
-                await self._place_leg(state, leg_num=leg_num + 1, input_qty=partial)
+                if leg_num == 2 and not self._leg3_clears_floor(state):
+                    log.warning(
+                        "[%s] partial Leg 2: Leg 3 below cost floor — aborting (proceeds=%.6f left open)",
+                        symbol, float(partial),
+                    )
+                    self._settle(symbol, success=False)
+                else:
+                    log.warning("[%s] continuing with partial Leg %d proceeds=%.6f", symbol, leg_num, float(partial))
+                    await self._place_leg(state, leg_num=leg_num + 1, input_qty=partial)
             else:
                 self._settle(symbol, success=False)
 
@@ -491,7 +498,7 @@ class TriExecutor:
     # ── cost floor ────────────────────────────────────────────────────────────
 
     def _leg3_clears_floor(self, state: _ExecState) -> bool:
-        """Return True if placing Leg 3 with current book can meet MIN_PROFIT_PCT."""
+        """Return True if placing Leg 3 with current book meets ARBITRAGE_MIN_PROFIT_THRESHOLD."""
         book     = state.book
         path_id  = state.intent.path.path_id
         proceeds = state.proceeds
@@ -531,6 +538,17 @@ class TriExecutor:
             )
             return False
         return True
+
+    def update_books(self, tri_books: dict[str, "TriBook"]) -> None:
+        """Refresh book snapshots for all in-flight symbols.
+
+        Called every tick from the engine so that _leg3_clears_floor always
+        uses current prices rather than the snapshot from Leg 1 placement.
+        """
+        for symbol, state in self._states.items():
+            book = tri_books.get(symbol)
+            if book is not None:
+                state.book = book
 
     # ── helpers ───────────────────────────────────────────────────────────────
 

@@ -190,13 +190,13 @@ class TwoLegExecutor:
     async def reprice_tick(self, tri_books: dict[str, TriBook]) -> None:
         """Called every engine tick. Cancel-replace Leg 2 if market has moved."""
         for symbol, state in list(self._states.items()):
-            if state.intent.leg2_oid is None:
-                continue  # still on Leg 1
-
             book = tri_books.get(symbol)
             if book is None:
                 continue
-            state.book = book  # keep book snapshot fresh for leg 2 pricing
+            state.book = book  # keep fresh for both cost-floor (Leg 1) and repricing (Leg 2)
+
+            if state.intent.leg2_oid is None:
+                continue  # still on Leg 1 — no repricing needed yet
 
             result       = state.intent.result
             floor        = state.intent.cost_floor

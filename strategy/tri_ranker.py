@@ -34,6 +34,12 @@ def _vwap_asks(depth: Depth, qty: Decimal) -> Decimal:
     return vwap
 
 
+def _qty_asks_by_notional(depth: Depth, notional: Decimal) -> Decimal:
+    """Walk asks spending `notional` quote currency. Returns base qty received."""
+    qty, _, _ = depth.walk_asks_to_notional(notional)
+    return qty
+
+
 def _path_definitions(symbol: str) -> list[dict]:
     """Static path metadata for a given symbol — no math, just labels."""
     return [
@@ -167,12 +173,12 @@ class TriRanker:
         if v1 == _ZERO:
             p1 = _ZERO
         else:
-            inr1 = target_s * v1 * ns * (_ONE - tds)
-            v2   = _vwap_asks(usdt_inr, inr1)
-            if v2 == _ZERO:
+            inr1      = target_s * v1 * ns * (_ONE - tds)
+            usdt2_raw = _qty_asks_by_notional(usdt_inr, inr1)   # spend inr1 INR, get USDT
+            if usdt2_raw == _ZERO:
                 p1 = _ZERO
             else:
-                usdt2 = (inr1 / v2) * nu
+                usdt2 = usdt2_raw * nu
                 ask3  = s_usdt.ask
                 if ask3 == _ZERO:
                     p1 = _ZERO
@@ -217,11 +223,11 @@ class TriRanker:
                     p3 = (usdt2 * v3 * nu * (_ONE - tds) / target_inr) if v3 else _ZERO
 
         # Path 4: BUY USDT/INR → BUY S/USDT (USDT-sell TDS) → SELL S/INR (TDS)
-        v1 = _vwap_asks(usdt_inr, target_inr)
-        if v1 == _ZERO:
+        usdt1_raw = _qty_asks_by_notional(usdt_inr, target_inr)  # spend target_inr INR, get USDT
+        if usdt1_raw == _ZERO:
             p4 = _ZERO
         else:
-            usdt1 = target_inr / v1 * nu
+            usdt1 = usdt1_raw * nu
             ask2  = s_usdt.ask
             if ask2 == _ZERO:
                 p4 = _ZERO

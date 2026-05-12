@@ -224,6 +224,10 @@ class TriEngine:
                 )
                 latency_ms = (time() - t0) * 1000
 
+                # Keep TriExecutor book snapshots fresh for mid-trade floor checks.
+                if hasattr(self._executor, "update_books"):
+                    self._executor.update_books(tri_books)
+
                 # Reprice any open 2-leg Leg 2 orders.
                 if self._two_leg_executor is not None:
                     await self._two_leg_executor.reprice_tick(tri_books)

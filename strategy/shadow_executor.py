@@ -224,8 +224,7 @@ class ShadowTwoLegExecutor:
             "usdt_variance":   _ZERO,
         }
 
-        usdt_inr_mid = book.usdt_inr.mid
-        if usdt_inr_mid == _ZERO or qty <= _ZERO:
+        if qty <= _ZERO:
             return _empty
 
         fee = self._fee_map.get(symbol, self.fee)
@@ -235,8 +234,8 @@ class ShadowTwoLegExecutor:
             _, ask_vwap_inr, _ = book.s_inr.walk_asks_to_qty(qty)
             if ask_vwap_inr == _ZERO:
                 return _empty
-            inr_cost         = qty * ask_vwap_inr
-            tokens_received  = qty * (_ONE - fee)
+            inr_cost        = qty * ask_vwap_inr
+            tokens_received = qty * (_ONE - fee)
 
             # Leg 2: SELL S on USDT C2C — receive USDT net of fee + TDS.
             _, bid_vwap_usdt, _ = book.s_usdt.walk_bids_to_qty(tokens_received)
@@ -244,9 +243,8 @@ class ShadowTwoLegExecutor:
                 return _empty
             usdt_received = tokens_received * bid_vwap_usdt * (_ONE - fee) * (_ONE - self.tds)
 
-            # C2C converts USDT → INR at mid rate (no additional fee modeled here).
-            inr_received = usdt_received * usdt_inr_mid
-            self.balances["INR"] = pre_inr - inr_cost + inr_received
+            self.balances["INR"]  = pre_inr - inr_cost
+            self.balances["USDT"] = pre_usd + usdt_received
 
         elif result.direction == "INR_EXPENSIVE":
             # Leg 1: BUY S on USDT C2C — spend USDT, receive tokens net of fee.
