@@ -142,7 +142,7 @@ class TwoLegRanker:
 
         # 2. Minimum available notional — book must offer at least ₹2,000 of depth.
         #    (fill ratio is not used — target_qty is the desired size, not the minimum viable size)
-        raw_notional = qty * ref_price
+        raw_notional = qty * (ask_vwap if direction == "INR_CHEAP" else bid_vwap)
         if raw_notional < config.TWO_LEG_MIN_NOTIONAL_INR:
             return self._no_opportunity(
                 symbol,
