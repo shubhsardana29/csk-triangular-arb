@@ -37,6 +37,7 @@ class CSKPublicWS:
     def __init__(self, ws_url: str = CSK_WS_URL):
         self.ws_url = ws_url
         self.books: dict[str, Depth] = {}
+        self.book_ts: dict[str, float] = {}   # per-instrument last-update timestamp
         self._last_msg_ts: float = 0.0
         self._instruments: set[str] = set()
         self._sio = socketio.AsyncClient(
@@ -138,6 +139,7 @@ class CSKPublicWS:
                 # can use a single consistent key format.
                 key = instrument.replace(",", "/")
                 self.books[key] = Depth(bids=bids, asks=asks)
+                self.book_ts[key] = time()
                 self._last_msg_ts = time()
             except Exception:
                 log.exception(

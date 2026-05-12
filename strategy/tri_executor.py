@@ -520,13 +520,14 @@ class TriExecutor:
         # Paths 1/2: token-start → compare final tokens to original tokens
         # Paths 3/4: INR-start  → compare final INR to original INR
         yield_ratio = est_output / original
-        floor = _ONE + config.MIN_PROFIT_PCT
+        # 3-leg floor: 3× taker + 2× TDS ≈ 2.3%. MIN_PROFIT_PCT is 2-leg only.
+        floor = _ONE + config.ARBITRAGE_MIN_PROFIT_THRESHOLD
         if yield_ratio < floor:
             log.debug(
                 "[%s] path=%d leg3 yield=%.4f%% floor=%.4f%% — below cost floor",
                 state.intent.symbol, path_id,
                 float(yield_ratio - _ONE) * 100,
-                float(config.MIN_PROFIT_PCT) * 100,
+                float(config.ARBITRAGE_MIN_PROFIT_THRESHOLD) * 100,
             )
             return False
         return True

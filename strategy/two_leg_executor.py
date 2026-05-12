@@ -47,9 +47,10 @@ LEG_TIMEOUT_S = 30.0
 class _State:
     intent:         TwoLegIntent
     book:           TriBook          # snapshot at detection — updated on reprice
-    oid_to_leg:     dict[str, int] = field(default_factory=dict)
-    timeout_handle: Optional[asyncio.TimerHandle] = None
-    stuck_logged_at: float = 0.0     # last time we logged "stuck at floor"
+    oid_to_leg:          dict[str, int] = field(default_factory=dict)
+    timeout_handle:      Optional[asyncio.TimerHandle] = None
+    stuck_logged_at:     float = 0.0   # last time we logged "stuck at floor"
+    stop_loss_triggered: bool  = False  # True after stop-loss cancel-replace fires
 
 
 class TwoLegExecutor:
@@ -135,8 +136,12 @@ class TwoLegExecutor:
         self._poller.track(oid, {"symbol": symbol, "leg": 1})
         self._arm_timeout(state, oid, 1)
 
-    async def _place_leg2(self, state: _State) -> None:
-        """Place Leg 2 SELL at max(cost_floor, market_bid)."""
+    async def _place_leg2(self, state: _State, override_price: Optional[Decimal] = None) -> None:
+        """Place Leg 2 SELL at max(cost_floor, market_bid).
+
+        override_price: when set (stop-loss path), bypasses the floor and sells
+        at the supplied price regardless of cost-floor protection.
+        """
         result = state.intent.result
         symbol = result.symbol
         qty    = state.intent.leg1_filled_qty
@@ -147,16 +152,23 @@ class TwoLegExecutor:
             return
 
         floor = state.intent.cost_floor
-        market_price = self._sell_market_price(result.sell_venue, state.book)
-        target_price = max(floor, market_price) if market_price > _ZERO else floor
+        if override_price is not None:
+            target_price = override_price
+        else:
+            market_price = self._sell_market_price(result.sell_venue, state.book)
+            target_price = max(floor, market_price) if market_price > _ZERO else floor
 
         if target_price <= _ZERO:
             log.error("[2leg %s] Leg 2: cannot determine sell price", symbol)
             self._settle(symbol, success=False)
             return
 
-        log.info("[2leg %s] placing Leg 2  %s  price=%.4f (floor=%.4f)  qty=%.6f",
-                 symbol, result.sell_venue, float(target_price), float(floor), float(qty))
+        log.info(
+            "[2leg %s] placing Leg 2  %s  price=%.4f (floor=%.4f%s)  qty=%.6f",
+            symbol, result.sell_venue, float(target_price), float(floor),
+            " STOP-LOSS" if override_price is not None else "",
+            float(qty),
+        )
 
         oid = await self._place_order(result.sell_venue, symbol, "SELL", target_price, qty)
         if not oid:
@@ -195,16 +207,37 @@ class TwoLegExecutor:
 
             target_price = max(floor, market_price)
 
-            # Log if stuck at floor.
+            # Handle below-floor market price.
             if market_price < floor:
-                now = time()
-                if now - state.stuck_logged_at > config.STUCK_ALERT_AFTER_S:
-                    log.warning(
-                        "[2leg %s] SELL resting at cost floor=%.4f  market_bid=%.4f",
-                        symbol, float(floor), float(market_price),
+                # Stop-loss: if market has dropped > TWO_LEG_STOP_LOSS_PCT below the
+                # floor, cut the loss now rather than wait indefinitely.
+                stop_loss_threshold = floor * (_ONE - config.TWO_LEG_STOP_LOSS_PCT)
+                if not state.stop_loss_triggered and market_price < stop_loss_threshold:
+                    state.stop_loss_triggered = True
+                    log.error(
+                        "[2leg %s] STOP-LOSS: market=%.4f dropped %.1f%% below floor=%.4f — selling at market",
+                        symbol, float(market_price),
+                        float((floor - market_price) / floor * 100), float(floor),
                     )
-                    state.stuck_logged_at = now
-                continue  # don't reprice — wait for market to come back up
+                    old_oid = state.intent.leg2_oid
+                    self._poller.untrack(old_oid)
+                    try:
+                        await self._client.cancel_order(old_oid)
+                    except Exception:
+                        log.exception("[2leg %s] stop-loss cancel failed", symbol)
+                    state.intent.leg2_oid = None
+                    if old_oid in state.oid_to_leg:
+                        del state.oid_to_leg[old_oid]
+                    await self._place_leg2(state, override_price=market_price)
+                else:
+                    now = time()
+                    if now - state.stuck_logged_at > config.STUCK_ALERT_AFTER_S:
+                        log.warning(
+                            "[2leg %s] SELL resting at cost floor=%.4f  market_bid=%.4f",
+                            symbol, float(floor), float(market_price),
+                        )
+                        state.stuck_logged_at = now
+                continue  # don't reprice further — either stop-loss placed or waiting
 
             # Check if the price has moved enough to warrant a cancel-replace.
             old_oid = state.intent.leg2_oid

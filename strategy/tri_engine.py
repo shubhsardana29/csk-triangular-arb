@@ -309,8 +309,21 @@ class TriEngine:
     ) -> None:
         exec_results: dict[str, dict] = {}
 
+        # P3: process highest expected-INR-profit opportunities first so the
+        # position lock is consumed by the best trade when multiple symbols fire.
+        ranked_by_profit = sorted(
+            ranked.items(),
+            key=lambda kv: kv[1][0].expected_profit_inr if kv[1][0].opportunity else Decimal(0),
+            reverse=True,
+        )
+        ranked_2l_by_profit = sorted(
+            ranked_2l.items(),
+            key=lambda kv: kv[1].expected_profit_inr if kv[1].opportunity else Decimal(0),
+            reverse=True,
+        )
+
         # ── 3-leg opportunities ───────────────────────────────────────────────
-        for symbol, (net, gross) in ranked.items():
+        for symbol, (net, gross) in ranked_by_profit:
             if not config.THREE_LEG_ENABLED:
                 break
             if not net.opportunity or net.executable_qty <= 0:
@@ -339,7 +352,7 @@ class TriEngine:
 
         # ── 2-leg opportunities ───────────────────────────────────────────────
         if self._two_leg_executor is not None and config.TWO_LEG_ENABLED:
-            for symbol, two_result in ranked_2l.items():
+            for symbol, two_result in ranked_2l_by_profit:
                 if not two_result.opportunity or two_result.executable_qty <= 0:
                     continue
                 if symbol in self._active_symbols:
@@ -406,11 +419,21 @@ class TriEngine:
 
     def _assemble_books(self) -> dict[str, TriBook]:
         """Build TriBook snapshots from the latest WS state."""
+        ts = time()
+
+        # P2: reject the entire tick if the USDT/INR rate is stale.
+        # Stale rate → wrong fair price → false signals on both legs.
+        if self._csk_ws:
+            usdt_inr_ts  = self._csk_ws.book_ts.get("USDT/INR", 0.0)
+            usdt_inr_age = (ts - usdt_inr_ts) if usdt_inr_ts > 0 else float("inf")
+            if usdt_inr_age > config.USDT_INR_MAX_AGE_S:
+                log.warning("[engine] USDT/INR rate stale (%.1fs) — skipping tick", usdt_inr_age)
+                return {}
+
         usdt_inr = (
             self._csk_ws.books.get("USDT/INR", Depth.empty())
             if self._csk_ws else Depth.empty()
         )
-        ts = time()
         books: dict[str, TriBook] = {}
 
         for symbol in self._symbols:
