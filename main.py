@@ -29,6 +29,7 @@ from strategy.two_leg_ranker import TwoLegRanker
 from strategy.shadow_executor import ShadowExecutor, ShadowTwoLegExecutor
 from strategy.tri_engine import TriEngine
 from strategy.tri_rebalancer import TriRebalancer
+from typing import Optional
 
 load_dotenv()
 
@@ -83,7 +84,7 @@ def _build_executor(execution_mode: str, client: CoinSwitchClient, on_settle=Non
 
 
 def _build_two_leg_executor(execution_mode: str, client: CoinSwitchClient, on_settle=None,
-                            shadow_balances: dict | None = None):
+                            shadow_balances: Optional[dict] = None,):
     """Build the appropriate 2-leg executor."""
     if execution_mode == "real":
         from strategy.two_leg_executor import TwoLegExecutor
