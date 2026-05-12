@@ -34,7 +34,7 @@ from time import time
 from typing import Optional
 
 import config
-from core.models import PathResult, TriBook, TriIntent
+from core.models import Depth, PathResult, TriBook, TriIntent
 from strategy.order_poller import OrderPoller
 
 log = logging.getLogger(__name__)
@@ -43,6 +43,7 @@ _ZERO = Decimal(0)
 _ONE  = Decimal(1)
 
 LEG_TIMEOUT_S = 30.0   # cancel a leg if not filled within this many seconds
+_MIN_RECOVERY_USDT = Decimal("2")  # skip dust positions below ~$2 USDT notional
 
 
 # ── leg metadata ──────────────────────────────────────────────────────────────
@@ -230,92 +231,37 @@ class TriExecutor:
             log.exception("[executor] failed to refresh balances")
 
     async def recover_open_positions(self) -> None:
-        """Detect and liquidate mid-triangle positions left from the previous run.
+        """Liquidate any token balance left from a crashed previous run.
 
-        Strategy:
-          1. Fetch recent filled orders (last 2 hours).
-          2. For each tracked symbol: if the token balance is > dust AND there's a
-             recent filled BUY for that symbol with no matching SELL → we're stuck
-             mid-triangle after Leg 1. Place a liquidating SELL on USDT C2C.
-          3. If USDT balance appears inflated (recent SELL on spot_usdt with no
-             subsequent USDT/INR sell) → place a SELL on USDT/INR to close Leg 3.
-
-        All recovery orders go through the normal poller so fills update balances.
-        If the CSK orders endpoint is unavailable, recovery is skipped with a warning.
+        Balance is the ground truth — if we hold a tracked token at boot,
+        something went wrong last time. Sell it immediately at the USDT C2C bid.
+        Skips dust positions (< _MIN_RECOVERY_USDT) to avoid rejected micro-orders.
         """
-        log.info("[executor] scanning for mid-triangle positions to recover")
-        try:
-            recent_orders = await self._client.get_recent_orders(lookback_minutes=120)
-        except Exception:
-            log.warning("[executor] recovery: could not fetch recent orders — skipping")
-            return
-
-        if not recent_orders:
-            log.info("[executor] recovery: no recent filled orders found")
-            return
-
-        # Build sets of symbols with recent BUYs and SELLs to detect imbalance.
-        # Key: symbol (e.g. "DOGE"), value: {"buys": count, "sells": count}
-        order_counts: dict[str, dict] = {}
-        for order in recent_orders:
-            raw_symbol = (order.get("symbol") or "").upper()
-            side       = (order.get("side") or "").upper()
-            exchange   = (order.get("exchange") or "").lower()
-
-            # Extract base symbol: "DOGEINR" → "DOGE", "DOGEUSDT" → "DOGE"
-            base = None
-            for suffix in ("INR", "USDT"):
-                if raw_symbol.endswith(suffix):
-                    base = raw_symbol[: -len(suffix)]
-                    break
-            if base is None or base not in self._symbols:
-                continue
-
-            bucket = order_counts.setdefault(base, {"buys": 0, "sells": 0})
-            if side == "BUY":
-                bucket["buys"] += 1
-            elif side == "SELL":
-                bucket["sells"] += 1
-
-        # Attempt recovery for each watched symbol.
+        log.info("[executor] scanning for leftover positions to recover")
         for symbol in self._symbols:
             token_bal = self.balances.get(symbol, _ZERO)
             if token_bal <= _ZERO:
                 continue
 
-            # Estimate notional in INR: require at least 200 INR to bother.
-            # We don't have live prices here, so use a rough USDT proxy if available.
-            # Recovery is best-effort — if we can't price, skip.
-            counts   = order_counts.get(symbol, {})
-            buys     = counts.get("buys", 0)
-            sells    = counts.get("sells", 0)
-            unmatched_buys = buys - sells
-
-            if unmatched_buys <= 0:
-                # Buys are matched by sells — balance might be legitimate inventory.
-                # Don't touch it.
-                continue
-
-            log.warning(
-                "[executor] recovery: %s has %.6f tokens + %d unmatched BUY order(s) "
-                "— placing liquidating SELL on USDT C2C",
-                symbol, float(token_bal), unmatched_buys,
-            )
-
-            # Place a limit SELL at the USDT C2C bid.
-            # We don't have live book here — use a conservative 0.5% below mid.
-            # The poller will track the fill; if it times out the position stays open
-            # for the next boot or manual resolution.
             try:
-                # Fetch a quick depth snapshot for the symbol.
                 raw = await self._client.get_depth(f"{symbol.lower()}/usdt", "binance")
-                from core.models import Depth as _Depth
-                depth = _Depth.from_raw(raw)
+                depth = Depth.from_raw(raw)
                 sell_price = depth.bid
                 if sell_price <= _ZERO:
                     log.warning("[executor] recovery: no USDT bid for %s — skipping", symbol)
                     continue
 
+                if token_bal * sell_price < _MIN_RECOVERY_USDT:
+                    log.debug(
+                        "[executor] recovery: %s balance %.6f is dust (~$%.2f) — skipping",
+                        symbol, float(token_bal), float(token_bal * sell_price),
+                    )
+                    continue
+
+                log.warning(
+                    "[executor] recovery: %s has %.6f tokens — placing liquidating SELL @ %.4f USDT",
+                    symbol, float(token_bal), float(sell_price),
+                )
                 oid = await self._client.place_usdt_order(symbol, "SELL", sell_price, token_bal)
                 if oid:
                     log.warning("[executor] recovery: placed SELL %s  %s qty=%.6f @ %.4f",
