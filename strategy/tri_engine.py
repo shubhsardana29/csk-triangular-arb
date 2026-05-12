@@ -386,12 +386,17 @@ class TriEngine:
                     key=lambda r: r.profit_pct, reverse=True,
                 )[:5]
                 for r in top5:
+                    book = tri_books.get(r.symbol)
+                    csk_price = float(book.s_inr.mid) if book else 0.0
+                    bnb_price = float(book.s_usdt.mid * book.usdt_inr.mid) if book else 0.0
                     log.info(
-                        "[2leg-best] %-10s  %s  spread=%+.3f%%  profit=%+.3f%%  threshold=%.3f%%",
+                        "[2leg-best] %-10s  %-13s  spread=%+.3f%%  profit=%+.3f%%  "
+                        "threshold=%.3f%%  csk=₹%.4f  bnb=₹%.4f",
                         r.symbol, r.direction,
                         float(r.spread_pct) * 100,
                         float(r.profit_pct) * 100,
                         float(config.TWO_LEG_MIN_SPREAD_PCT) * 100,
+                        csk_price, bnb_price,
                     )
 
         self._cycle += 1
