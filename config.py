@@ -83,7 +83,9 @@ DEFAULT_INR_EXPOSURE = Decimal(os.getenv("DEFAULT_INR_EXPOSURE", "25000"))
 
 # Internal sentinel values — Decimal so they compare cleanly with Decimal path yields.
 ARBITRAGE_BASE_RETURN = Decimal("1")
-ARBITRAGE_MIN_PROFIT_THRESHOLD = Decimal(os.getenv("ARBITRAGE_MIN_PROFIT_THRESHOLD", "0.0001"))
+# 3-leg real cost floor: 3× taker fee (0.1% each) + 2× TDS (1% each) = ~2.28%.
+# Set to 2.3% with a small buffer. Any path below this is a guaranteed loss.
+ARBITRAGE_MIN_PROFIT_THRESHOLD = Decimal(os.getenv("ARBITRAGE_MIN_PROFIT_THRESHOLD", "0.023"))
 
 # Strategy switches
 THREE_LEG_ENABLED = os.getenv("THREE_LEG_ENABLED", "false").lower() in {"1", "true", "yes"}
