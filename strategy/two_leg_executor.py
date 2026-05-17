@@ -254,7 +254,7 @@ class TwoLegExecutor:
                 except Exception:
                     log.exception("[2leg %s] cancel Leg 2 failed", symbol)
                 state.intent.leg2_oid = None
-                del state.oid_to_leg[old_oid]
+                state.oid_to_leg.pop(old_oid, None)
                 await self._place_leg2(state)
 
     # ── poller callbacks ──────────────────────────────────────────────────────

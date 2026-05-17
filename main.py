@@ -58,10 +58,11 @@ def _format_opportunity_alert(symbol: str, net, gross) -> str:
     )
 
 
-def _format_execution_alert(symbol: str, net, result: dict) -> str:
+def _format_execution_alert(symbol: str, net, result: dict, mode: str = "shadow") -> str:
     bal = result.get("result_balances", {})
+    label = "Trade" if mode == "real" else "Shadow trade"
     return (
-        f":white_check_mark: Shadow trade: {symbol}\n"
+        f":white_check_mark: {label}: {symbol}\n"
         f"INR Δ {float(result.get('inr_variance', 0)):+.2f}  "
         f"{symbol} Δ {float(result.get('symbol_variance', 0)):+.6f}  "
         f"USDT Δ {float(result.get('usdt_variance', 0)):+.6f}\n"
@@ -147,11 +148,11 @@ async def main() -> None:
         if config.SLACK_OPPORTUNITY_ALERTS_ENABLED:
             await notifier.send(
                 _format_opportunity_alert(symbol, net, gross),
-                key=f"opp:{symbol}:{net.direction}:{round(float(net.profit_pct), 4)}",
+                key=f"opp:{symbol}:{net.direction}",
             )
         if config.SLACK_EXECUTION_ALERTS_ENABLED and result:
             await notifier.send(
-                _format_execution_alert(symbol, net, result),
+                _format_execution_alert(symbol, net, result, mode=execution_mode),
                 key=f"exec:{symbol}:{net.direction}",
             )
         # Fire-and-forget to n8n (if enabled) — never blocks the tick loop.
