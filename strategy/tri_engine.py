@@ -131,8 +131,10 @@ class TriEngine:
 
         # ShadowExecutor: build a simulated portfolio from config.
         # TriExecutor: start() fetches real balances from the exchange.
+        # .update() preserves the shared dict reference held by ShadowTwoLegExecutor.
         if not self._executor.balances:
-            self._executor.balances = config.build_initial_shadow_balances(self._symbols, tri_books)
+            initial = config.build_initial_shadow_balances(self._symbols, tri_books)
+            self._executor.balances.update(initial)
 
         await self._executor.start()
         if self._two_leg_executor is not None:
