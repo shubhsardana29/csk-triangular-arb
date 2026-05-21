@@ -92,7 +92,7 @@ def _build_two_leg_executor(execution_mode: str, client: CoinSwitchClient, on_se
         return TwoLegExecutor(client=client, fee=config.TAKER_FEE, tds=config.TDS_RATE,
                               on_settle=on_settle)
     return ShadowTwoLegExecutor(
-        balances=shadow_balances or {},
+        balances=shadow_balances if shadow_balances is not None else {},
         fee=config.TAKER_FEE,
         tds=config.TDS_RATE,
         on_settle=on_settle,

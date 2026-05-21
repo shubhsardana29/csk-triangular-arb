@@ -83,16 +83,25 @@ class ShadowExecutor:
         pre_inr = self.balances.get("INR",  _ZERO)
         pre_usd = self.balances.get("USDT", _ZERO)
 
-        _empty = {
-            "result_balances": self.balances.copy(),
-            "symbol_variance": _ZERO,
-            "inr_variance":    _ZERO,
-            "usdt_variance":   _ZERO,
-        }
+        def _settle():
+            if self._on_settle is not None:
+                try:
+                    self._on_settle(symbol)
+                except Exception:
+                    log.exception("[shadow] on_settle raised for %s", symbol)
+
+        def _empty():
+            return {
+                "result_balances": self.balances.copy(),
+                "symbol_variance": _ZERO,
+                "inr_variance":    _ZERO,
+                "usdt_variance":   _ZERO,
+            }
 
         now = time.monotonic()
         if now - self._last_traded.get(symbol, 0.0) < self.TRADE_COOLDOWN_S:
-            return _empty
+            _settle()
+            return _empty()
 
         if path.path_id == 1:
             # S → INR (TDS) → USDT (buy) → S (USDT-sell TDS)
@@ -100,7 +109,8 @@ class ShadowExecutor:
             usdt  = self._buy_by_notional(tri_book.usdt_inr, inr,  fee=usdt_fee)
             s_out = self._buy_by_notional(tri_book.s_usdt, usdt, fee=fee, tds_on_receive=True)
             if not all([inr, usdt, s_out]):
-                return _empty
+                _settle()
+                return _empty()
             self.balances[symbol] = pre_s - qty + s_out
 
         elif path.path_id == 2:
@@ -109,7 +119,8 @@ class ShadowExecutor:
             inr   = self._sell(tri_book.usdt_inr, usdt, fee=usdt_fee, apply_tds=True)
             s_out = self._buy_by_notional(tri_book.s_inr, inr, fee=fee)
             if not all([usdt, inr, s_out]):
-                return _empty
+                _settle()
+                return _empty()
             self.balances[symbol] = pre_s - qty + s_out
 
         elif path.path_id == 3:
@@ -118,7 +129,8 @@ class ShadowExecutor:
             usdt  = self._sell(tri_book.s_usdt,   s_got, fee=fee,      apply_tds=True)
             inr   = self._sell(tri_book.usdt_inr, usdt,  fee=usdt_fee, apply_tds=True)
             if not all([s_got, usdt, inr]):
-                return _empty
+                _settle()
+                return _empty()
             self.balances["INR"] = pre_inr - qty + inr
 
         elif path.path_id == 4:
@@ -127,30 +139,24 @@ class ShadowExecutor:
             s_got = self._buy_by_notional(tri_book.s_usdt, usdt, fee=fee, tds_on_receive=True)
             inr   = self._sell(tri_book.s_inr, s_got, fee=fee, apply_tds=True)
             if not all([usdt, s_got, inr]):
-                return _empty
+                _settle()
+                return _empty()
             self.balances["INR"] = pre_inr - qty + inr
 
         else:
             log.warning("ShadowExecutor: unknown path_id=%s for %s", path.path_id, symbol)
-            return _empty
+            _settle()
+            return _empty()
 
         self._last_traded[symbol] = now
+        _settle()
 
-        result = {
+        return {
             "result_balances": self.balances.copy(),
             "symbol_variance": self.balances.get(symbol, _ZERO) - pre_s,
             "inr_variance":    self.balances.get("INR",  _ZERO) - pre_inr,
             "usdt_variance":   self.balances.get("USDT", _ZERO) - pre_usd,
         }
-
-        # Release the position lock immediately — shadow trades settle synchronously.
-        if self._on_settle is not None:
-            try:
-                self._on_settle(symbol)
-            except Exception:
-                log.exception("[shadow] on_settle raised for %s", symbol)
-
-        return result
 
     # ── private: leg helpers ──────────────────────────────────────────────────
 
@@ -233,65 +239,73 @@ class ShadowTwoLegExecutor:
         pre_inr = self.balances.get("INR",  _ZERO)
         pre_usd = self.balances.get("USDT", _ZERO)
 
-        _empty = {
-            "result_balances": self.balances.copy(),
-            "symbol_variance": _ZERO,
-            "inr_variance":    _ZERO,
-            "usdt_variance":   _ZERO,
-        }
+        def _empty():
+            return {
+                "result_balances": self.balances.copy(),
+                "symbol_variance": _ZERO,
+                "inr_variance":    _ZERO,
+                "usdt_variance":   _ZERO,
+            }
+
+        def _settle():
+            if self._on_settle is not None:
+                try:
+                    self._on_settle(symbol)
+                except Exception:
+                    log.exception("[shadow_2leg] on_settle raised for %s", symbol)
 
         if qty <= _ZERO:
-            return _empty
+            _settle()
+            return _empty()
 
-        # Bug fix: per-symbol cooldown — prevents re-entry every 100ms tick
-        # while a spread persists. 30s mirrors realistic settlement latency.
         now = time.monotonic()
         if now - self._last_traded.get(symbol, 0.0) < self.TRADE_COOLDOWN_S:
-            return _empty
+            _settle()
+            return _empty()
 
         fee = self._fee_map.get(symbol, self.fee)
 
         if result.direction == "INR_CHEAP":
-            # Leg 1: BUY S on INR book — spend INR, receive tokens net of fee.
             _, ask_vwap_inr, _ = book.s_inr.walk_asks_to_qty(qty)
             if ask_vwap_inr == _ZERO:
-                return _empty
+                _settle()
+                return _empty()
             inr_cost        = qty * ask_vwap_inr
             tokens_received = qty * (_ONE - fee)
 
-            # Bug fix: reject if insufficient INR balance.
             if pre_inr < inr_cost:
                 log.warning("[shadow_2leg] insufficient INR for %s: have %.2f need %.2f",
                             symbol, float(pre_inr), float(inr_cost))
-                return _empty
+                _settle()
+                return _empty()
 
-            # Leg 2: SELL S on USDT C2C — receive USDT net of fee + TDS.
             _, bid_vwap_usdt, _ = book.s_usdt.walk_bids_to_qty(tokens_received)
             if bid_vwap_usdt == _ZERO:
-                return _empty
+                _settle()
+                return _empty()
             usdt_received = tokens_received * bid_vwap_usdt * (_ONE - fee) * (_ONE - self.tds)
 
             self.balances["INR"]  = pre_inr - inr_cost
             self.balances["USDT"] = pre_usd + usdt_received
 
         elif result.direction == "INR_EXPENSIVE":
-            # Leg 1: BUY S on USDT C2C — spend USDT, receive tokens net of fee.
             _, ask_vwap_usdt, _ = book.s_usdt.walk_asks_to_qty(qty)
             if ask_vwap_usdt == _ZERO:
-                return _empty
+                _settle()
+                return _empty()
             usdt_cost       = qty * ask_vwap_usdt
             tokens_received = qty * (_ONE - fee)
 
-            # Bug fix: reject if insufficient USDT balance.
             if pre_usd < usdt_cost:
                 log.warning("[shadow_2leg] insufficient USDT for %s: have %.4f need %.4f",
                             symbol, float(pre_usd), float(usdt_cost))
-                return _empty
+                _settle()
+                return _empty()
 
-            # Leg 2: SELL S on INR book — receive INR net of fee + TDS.
             _, bid_vwap_inr, _ = book.s_inr.walk_bids_to_qty(tokens_received)
             if bid_vwap_inr == _ZERO:
-                return _empty
+                _settle()
+                return _empty()
             inr_received = tokens_received * bid_vwap_inr * (_ONE - fee) * (_ONE - self.tds)
 
             self.balances["USDT"] = pre_usd - usdt_cost
@@ -299,15 +313,11 @@ class ShadowTwoLegExecutor:
 
         else:
             log.warning("[shadow_2leg] unknown direction=%s for %s", result.direction, symbol)
-            return _empty
+            _settle()
+            return _empty()
 
         self._last_traded[symbol] = now
-
-        if self._on_settle is not None:
-            try:
-                self._on_settle(symbol)
-            except Exception:
-                log.exception("[shadow_2leg] on_settle raised for %s", symbol)
+        _settle()
 
         return {
             "result_balances": self.balances.copy(),
